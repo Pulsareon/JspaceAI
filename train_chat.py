@@ -16,7 +16,7 @@ import re
 
 from jspaceai import (
     LanguageConfig, JSpaceLanguageModel,
-    CharTokenizer, load_shakespeare, load_chinese_corpus, load_textbook_corpus,
+    CharTokenizer, load_chinese_corpus, load_textbook_corpus,
 )
 
 
@@ -30,44 +30,75 @@ def get_config(vocab_size: int) -> LanguageConfig:
 
 
 def clean_corpus() -> str:
-    """清洗语料：繁简转换 + 过滤噪声段落，保留连续中文文本
+    """构建中文训练语料——读取 corpus/ 下所有文件，繁简双版本同时投喂。
 
-    策略：不截断 vocab（避免 unk 污染）。用内嵌唐诗宋词论语（连续文本）
-    + 维基百科中文段落补充数据量。vocab 自然约 3000-4000。
-    虽然 vocab 大，但每个字符都是真实字符（无 unk），模型学到真实模式。
+    策略：
+      1. 递归读取 corpus/ 目录下所有文件（.txt .md 等）
+      2. 去掉 markdown/HTML 标记（链接、表格、标题符号等），只保留纯文本
+      3. 对每段文本同时生成简体版和繁体版，都喂给模型
+      4. 加上内嵌唐诗宋词论语（简体连续文本）
     """
     from opencc import OpenCC
-    cc = OpenCC('t2s')
-    convert = cc.convert
+    from pathlib import Path
+    cc_s2t = OpenCC('s2t')  # 简转繁
+    cc_t2s = OpenCC('t2s')  # 繁转简
 
-    # 1. 内嵌语料（连续文本，质量高）
-    parts = [load_shakespeare(), load_chinese_corpus()]
+    corpus_dir = Path(__file__).parent.parent / 'corpus'
+    raw_paragraphs = []
 
-    # 2. 课本语料清洗（只保留高质量中文段落）
-    textbook = load_textbook_corpus()
-    if textbook:
-        textbook = convert(textbook)
-        textbook = re.sub(r'^## .+$', '', textbook, flags=re.M)
-        textbook = re.sub(r'^=== .+ ===$', '', textbook, flags=re.M)
-        paragraphs = textbook.split('\n\n')
-        cleaned = []
-        for para in paragraphs:
-            para = para.strip()
-            if len(para) < 20 or len(para) > 500:
-                continue
-            zh_chars = sum(1 for c in para if len(c) == 1 and ord(c) > 0x4e00)
-            if zh_chars < len(para) * 0.5:
-                continue
-            digit_ratio = sum(1 for c in para if c.isdigit()) / max(len(para), 1)
-            if digit_ratio > 0.1:
-                continue
-            para = re.sub(r'[ \t]+', ' ', para)
-            para = re.sub(r'\n{3,}', '\n\n', para)
-            cleaned.append(para)
-        if cleaned:
-            parts.append('\n\n'.join(cleaned))
+    # 1. 内嵌唐诗宋词论语
+    for para in load_chinese_corpus().split('\n\n'):
+        para = para.strip()
+        if para:
+            raw_paragraphs.append(para)
 
-    return '\n\n'.join(parts)
+    # 2. 递归读取 corpus/ 下所有文件
+    if corpus_dir.exists():
+        for filepath in sorted(corpus_dir.rglob('*')):
+            if not filepath.is_file():
+                continue
+            try:
+                content = filepath.read_text(encoding='utf-8', errors='ignore')
+            except Exception:
+                continue
+            # 去 markdown 标记
+            content = re.sub(r'\[([^\]]*)\]\([^)]*\)', r'\1', content)  # 链接
+            content = re.sub(r'^#{1,6}\s+', '', content, flags=re.M)    # 标题
+            content = re.sub(r'^\|.*\|$', '', content, flags=re.M)      # 表格行
+            content = re.sub(r'^---+$', '', content, flags=re.M)        # 分隔线
+            content = re.sub(r'```[^`]*```', '', content, flags=re.S)   # 代码块
+            content = re.sub(r'\*\*([^*]+)\*\*', r'\1', content)        # 粗体
+            content = re.sub(r'\*([^*]+)\*', r'\1', content)            # 斜体
+            content = re.sub(r'^- ', '', content, flags=re.M)           # 列表
+            # 按空行分段
+            for para in content.split('\n\n'):
+                para = para.strip()
+                if para:
+                    raw_paragraphs.append(para)
+
+    # 清洗过滤
+    cleaned = []
+    for para in raw_paragraphs:
+        para = re.sub(r'[ \t]+', ' ', para)
+        para = re.sub(r'\n{3,}', '\n\n', para)
+        para = para.strip()
+        if len(para) < 10 or len(para) > 500:
+            continue
+        # 至少要有一些中文字符
+        zh_chars = sum(1 for c in para if len(c) == 1 and ord(c) > 0x4e00)
+        if zh_chars < 3:
+            continue
+        cleaned.append(para)
+
+    # 繁简双版本投喂
+    bilingual = []
+    for para in cleaned:
+        simplified = cc_t2s.convert(para)
+        traditional = cc_s2t.convert(simplified)
+        bilingual.append(simplified)
+        bilingual.append(traditional)
+
+    return '\n\n'.join(bilingual)
 
 
 def gen_sample(model, tok, prompt_text, n_new=80, temp=0.7, top_k=5):
@@ -118,7 +149,7 @@ def main():
         except Exception:
             print("加载失败，全新训练")
 
-    prompts = ['To be', '学而时习之', '床前明月光', '春天', '人']
+    prompts = ['学而时习之', '床前明月光', '學而時習之', '春天', '人']
 
     stages = [
         (5e-3, 400, "快速下降"),

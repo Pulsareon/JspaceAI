@@ -23,7 +23,7 @@ from pathlib import Path
 
 from jspaceai import (
     LanguageConfig, JSpaceLanguageModel, EvolutionTrainer,
-    CharTokenizer, load_corpus,
+    CharTokenizer, load_chinese_corpus,
 )
 from train_chat import clean_corpus
 
@@ -94,7 +94,7 @@ def train(model, tokenizer, text, n_steps: int, device: str):
         chunks, tokenizer,
         seq_len=64, batch_size=8,
         consolidate_every=50, generate_every=50,
-        max_steps=n_steps, prompt_text="To be",
+        max_steps=n_steps, prompt_text="学而时习之",
     )
 
     # 恢复 RK4

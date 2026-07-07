@@ -43,7 +43,7 @@ def clean_corpus() -> str:
     cc_s2t = OpenCC('s2t')  # 简转繁
     cc_t2s = OpenCC('t2s')  # 繁转简
 
-    corpus_dir = Path(__file__).parent.parent / 'corpus'
+    corpus_dir = Path(__file__).parent / 'corpus'
     raw_paragraphs = []
 
     # 1. 内嵌唐诗宋词论语
@@ -52,7 +52,16 @@ def clean_corpus() -> str:
         if para:
             raw_paragraphs.append(para)
 
-    # 2. 递归读取 corpus/ 下所有文件
+    # 2. LCCC 对话语料（最高优先级，真实对话）
+    lccc_file = corpus_dir / 'lccc_dialogues.txt'
+    if lccc_file.exists():
+        lccc_text = lccc_file.read_text(encoding='utf-8')
+        for para in lccc_text.split('\n\n'):
+            para = para.strip()
+            if para:
+                raw_paragraphs.append(para)
+
+    # 3. 递归读取 corpus/ 下其他所有文件（教材+百科）
     if corpus_dir.exists():
         for filepath in sorted(corpus_dir.rglob('*')):
             if not filepath.is_file():

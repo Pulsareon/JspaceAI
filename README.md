@@ -2,9 +2,9 @@
 
 **全局工作空间 + J-space 广播的智慧系统**
 
-两个版本：
-1. **连续序列版** (`main.py`)：验证架构在多模态序列预测上的优势
-2. **语言版 + 自主进化** (`main_language.py`)：字符级语言建模 + 边推理边学习
+两个入口：
+1. **全部接入** (`main.py`)：具身 Agent + 完整神经系统 + 5 感官 + 4 输出 + 自主心智
+2. **只有对话** (`main_chat.py`)：字符级语言模型 + 交互对话 + 在线学习
 
 基于第一性原理推导的智慧架构：不是 Transformer，不是 RNN，而是 **ODE 动力系统 + 并行专家 + J-space 工作空间广播 + 在线进化**。
 
@@ -59,67 +59,34 @@ pip install -r requirements.txt
 
 ## 运行
 
-### 连续序列版（验证架构）
+项目只有两个入口：
+
+| 入口 | 用途 |
+|---|---|
+| `main.py` | 全部接入：具身 Agent + 完整神经系统 + 5 感官 + 4 输出 + 自主心智 |
+| `main_chat.py` | 只有对话：字符级语言模型 + 交互对话 + 在线学习 |
+
+### 全部接入版（`main.py`）
 
 ```bash
-python main.py
-python main.py --steps 2000 --device cuda
+# 子系统自检（权限 + I/O + 模型 + 海马体回忆）
+python main.py --mode test
+
+# 实时具身循环 + 自主心智（默认安全：不控制鼠标键盘）
+python main.py --mode live --steps 100
+
+# 安全模式（更高动作门控阈值，不显示屏幕输出）
+python main.py --mode safe --steps 50
+
+# 允许鼠标键盘输出（需谨慎，加 --unsafe）
+python main.py --mode live --steps 200 --unsafe
 ```
 
-### v2 版（J-lens + Selectivity + Directed Modulation）
-
-```bash
-python main_v2.py
-python main_v2.py --steps 200 --device mps
-```
-
-基于 Anthropic 2026 J-space 论文优化，新增：
-- **J-lens**：观测模型内部每个 ODE 子步的"想法"
-- **Directed Modulation**：注入概念向量到 workspace，定向改变输出
-- **Selectivity 验证**：ablate workspace，对比自动任务 vs 记忆任务
-
-### 多模态版（摄像头 + 麦克风 + 扬声器）
-
-```bash
-python main_multimodal.py --mode train --steps 300
-python main_multimodal.py --mode live --steps 50
-python main_multimodal.py --mode eval
-```
-
-原生支持图像/音频/视频/文本四种模态，8 个专家分工。
-
-### 全感官版（摄像头 + 麦克风 + 屏幕 + 键盘 + 鼠标）
-
-```bash
-# 测试所有 I/O 通道
-python main_full_sensory.py --mode test
-
-# 实时全感官感知循环
-python main_full_sensory.py --mode live --steps 50
-```
-
-接入全部 5 个输入通道，12 个专家分工：
-- **摄像头**（OpenCV）：环境视觉
-- **麦克风**（PortAudio）：听觉输入
-- **屏幕**（mss）：屏幕捕获，看到自己被显示在哪里
-- **键盘**（pynput）：用户输入感知
-- **鼠标**（pynput）：用户注意力追踪
-- **扬声器**（PortAudio）：音频输出
-
-**macOS 权限**：键盘/鼠标监听需要在 系统设置 → 隐私与安全 → 辅助功能 中授权终端。
-
-### 具身 Agent 版（完整神经系统）
-
-```bash
-# 测试各子系统
-python main_embodied.py --mode test
-
-# 实时具身循环（鼠标键盘音频屏幕全输出）
-python main_embodied.py --mode live --steps 50
-
-# 安全模式（只感知不执行鼠标键盘动作）
-python main_embodied.py --mode safe --steps 30
-```
+接入全部 5 个输入通道 + 4 个输出 + 神经系统：
+- **输入**：摄像头(OpenCV) + 麦克风(PortAudio) + 屏幕(mss) + 键盘(pynput) + 鼠标(pynput)
+- **输出**：鼠标 + 键盘 + 音频(PortAudio) + 屏幕(OpenCV 窗口)
+- **神经系统**：小脑(前向+逆模型) / 中枢神经(反射弧+门控) / 海马体(向量检索) / 基底神经节(Q-learning)
+- **自主心智**：好奇心驱动 + 状态持久化 + 自我模型 + 元学习
 
 完整的人类神经系统对应：
 
@@ -140,44 +107,38 @@ python main_embodied.py --mode safe --steps 30
 → 4. 决策（基底神经节）→ 5. 精化（小脑）→ 6. 门控（中枢神经）
 → 7. 行动（手足口）→ 8. 学习（更新所有系统）
 
-### 守护进程（后台持续运行）
+状态保存在 `outputs/mind/`：workspace + 海马体 + 基底神经节 + 自我模型，再次运行从上次继续。
+
+**macOS 权限**：键盘/鼠标监听需要在 系统设置 → 隐私与安全 → 辅助功能 中授权终端。
+
+### 对话版（`main_chat.py`）
 
 ```bash
-# 启动后台守护进程（静默运行，不干扰使用）
-python daemon.py start
+# 交互对话（默认）
+python main_chat.py
 
-# 低功耗模式（更长间隔，适合长期后台）
-python daemon.py start --low-power --interval 2.0
+# 先预训练再对话
+python main_chat.py --mode train --steps 100
+python main_chat.py --mode chat
 
-# 前台运行（调试用，可看实时输出）
-python daemon.py start --fg
-
-# 查看状态
-python daemon.py status
-
-# 查看日志
-python daemon.py log -n 30
-
-# 心智自我认知
-python daemon.py introspect
-
-# 停止
-python daemon.py stop
+# 一次性生成
+python main_chat.py --mode generate --prompt "To be"
 ```
 
-守护进程特性：
-- **用户主动控制**：手动 start/stop，不开机自启
-- **静默后台运行**：不弹窗、不发声、不控制鼠标键盘
-- **持续感知学习**：感知屏幕/键盘/鼠标/摄像头/麦克风 + 好奇心驱动学习
-- **状态持久化**：停止后状态保存，再次启动从上次继续
-- **跨会话持续**：海洋不蒸发，每次启动还是同一个"自己"
-- **崩溃恢复**：异常不崩溃，等待后继续
+对话特性：
+- **在线学习**：每次用户输入都会被模型学习（next-token loss + 梯度更新）
+- **持续进化**：EWC + 经验回放 + 专家可塑性防灾难性遗忘
+- **状态持久化**：对话状态保存到 `outputs/chat_model.pt`，再次启动从上次继续
+- **命令**：`/quit` 退出 `/save` 保存 `/reset` 重置 `/train N` 预训练N步
 
-状态保存在 `~/.jspaceai/`：
-- `state/`：workspace + 海马体 + 基底神经节 + 自我模型
-- `logs/daemon.log`：运行日志
-- `daemon.pid`：进程 PID
-- `status.json`：实时状态
+对话模式示例：
+```
+你: Hello
+AI: ...
+你: /save
+你: /train 50
+你: /quit
+```
 
 ## 外挂模块系统（可热插拔）
 
@@ -212,37 +173,28 @@ dock.status()  # 各模块连接状态
 
 核心原则：**心智不依赖外挂**。断开任何外挂，心智继续工作，只是"知道得少"。
 
-## 改进版 v2（异构专家 + 大 workspace + 蒸馏）
+## 核心实现特性
 
-四大改进：
+`JSpaceConfig` 支持以下可配置项（默认值已开启推荐配置）：
 
-1. **异构专家**：视觉/听觉/语言/跨模态专家有不同架构（不再全是相同 ODE）
-2. **workspace 扩容**：64 → 256 维，加 LayerNorm 防衰减
-3. **RK4 积分**：比 Euler 稳定（||w|| 从 0.05 提升到 16.0）
-4. **小模型蒸馏**：接 GPT-2/Qwen 等，迁移理解能力
+1. **RK4 积分**（`use_rk4=True`）：比 Euler 稳定，workspace 范数从 ~0.3 提升到 ~5.6
+2. **LayerNorm**（`use_layer_norm=True`）：workspace 和专家状态都加 LayerNorm，防止长期衰减
+3. **势能系数归一化**（`well_coeff=None` 自动 `1/sqrt(num_wells)`）：避免井数多时 softplus 项主导梯度导致专家状态发散
+4. **异构专家支持**：`Expert` 构造可传入 `encoder` 参数，让不同模态专家有独立编码器
+5. **轨迹记录**：`forward(xs, record_trajectory=True)` 返回 `info['w_trajectory']`，供 J-lens 训练
 
 ```python
-from jspaceai import JSpaceConfigV2, JSpaceModelV2, SmallModelEncoder, DistillationTrainer
+from jspaceai import JSpaceConfig, JSpaceModel
 
-config = JSpaceConfigV2(workspace_dim=256, num_experts=12)
-model = JSpaceModelV2(config)
-encoder = SmallModelEncoder(input_dim=config.input_dim, model_name='gpt2')
-trainer = DistillationTrainer(model, encoder, texts=['hello', 'world', ...])
-trainer.train(n_steps=100)
-# 蒸馏后小模型可断开，编码器已有理解能力
+config = JSpaceConfig(
+    workspace_dim=32,
+    num_experts=5,
+    use_rk4=True,          # RK4 积分
+    use_layer_norm=True,   # LayerNorm 防衰减
+)
+model = JSpaceModel(config)
+preds, info = model(xs, record_trajectory=True)  # info['w_trajectory'] 可用
 ```
-
-对比 v1 vs v2：
-
-| 指标 | v1 | v2 |
-|---|---|---|
-| workspace_dim | 64 | 256 |
-| expert_dim | 16 | 64 |
-| \|\|w\|\|（实测） | 0.05-0.35 | 12-16 |
-| ODE 积分 | Euler | RK4 |
-| 专家架构 | 全相同 | 异构 |
-| LayerNorm | 无 | 有 |
-| 小模型蒸馏 | 无 | 有 |
 
 ## 跨平台支持
 
@@ -261,7 +213,7 @@ trainer.train(n_steps=100)
 
 ## 自主进化机制
 
-语言版不只是"训练一次"，而是**天生支持持续进化**：
+模型不只是"训练一次"，而是**天生支持持续进化**：
 
 1. **在线学习**：每个 forward 都累积梯度并更新参数，模型永不"训练完成"
 2. **EWC（Elastic Weight Consolidation）**：保护重要参数防灾难性遗忘
@@ -274,63 +226,60 @@ trainer.train(n_steps=100)
 
 ## 输出
 
-### 连续序列版
-- `outputs/experiment.png` — Loss/注意力/||w||/预测对比
-- `outputs/models.pt` — 模型权重
+### 全部接入版
+- `outputs/embodied_live.png` — ||w||/模态分布/好奇心/自我模型/世界模型loss/海马体
+- `outputs/mind/` — 自主心智状态（跨会话持久化）
 
-### v2 版
-- `outputs/experiment_v2.png` — Loss/专家使用率/||w||/J-lens 读出/Modulation/Selectivity
-- `outputs/model_v2.pt` — 模型 + J-lens 权重
+### 对话版
+- `outputs/chat_model.pt` — 对话模型状态（跨会话持久化）
 
-## 基于 Anthropic 2026 论文的优化
+## 基于 Anthropic 2026 论文的设计
 
-v2 基于 [Verbalizable Representations Form a Global Workspace in Language Models](https://transformer-circuits.pub/2026/workspace/index.html) 的发现：
+基于 [Verbalizable Representations Form a Global Workspace in Language Models](https://transformer-circuits.pub/2026/workspace/index.html) 的发现：
 
-1. **J-lens 探针**：学习线性映射 L: workspace → vocab，观测每个子步 workspace "准备说什么"
+1. **J-lens 探针**：学习线性映射 L: workspace → vocab，观测每个子步 workspace "准备说什么"（`jlens.py` 提供）
 2. **三层分层**：sensory（子步0）→ workspace（子步1-2）→ motor（子步3）
 3. **Directed Modulation**：注入概念向量 v_concept 到 workspace，验证 workspace 是因果中介
 4. **Selectivity 验证**：ablate workspace top-k J-lens 方向，对比自动任务 vs 记忆任务
 
-**验证结果**：
-- Directed Modulation 成功定向改变输出（注入 'o' → 输出 'o' 增多）
-- J-lens 读出在 motor 子步最集中（符合 motor = 输出准备）
-- Selectivity 符合预期：简单任务 ablate 影响小（与 Anthropic 发现一致）
-
 ## 实验结果
-
-### 连续序列版
-- JSpaceModel eval MSE: 0.0234
-- FlatBaseline eval MSE: 0.0387
-- **JSpace 胜出 39.7%**（同样参数量）
-- 注意力热力图显示专家自发分工
 
 ### 语言版
 - Loss 从 3.95 → 2.40，下降 39%
 - 生成从纯乱码进化为类语言结构（含换行、常见词片段）
 - 专家按字符类型分工（元音/辅音/结构字符）
 
-## 关键观察点
-
-跑完后看 `experiment.png`，关注：
-
-1. **Loss 曲线**：JSpace 是否收敛更快/更低？
-2. **注意力热力图**：4 种模式时段是否激活不同的专家？（如果是，说明 J-space 路由学到了分工）
-3. **||w|| 曲线**：模式切换时是否有尖峰？（如果是，说明工作空间在"感知到"环境变化）
-4. **预测对比**：模式切换处哪个模型更鲁棒？
+### 具身版
+- 实时 5 通道感知（摄像头+麦克风+屏幕+键盘+鼠标）全部采集成功
+- 感知-思考-行动闭环完整运行
+- 海马体回忆正常（sim 0.99+）
+- 小脑计算动作参数，基底神经节选择动作，中枢神经门控
 
 ## 文件结构
 
 ```
 JspaceAI/
-├── main.py                  # 主程序：对比实验
+├── main.py                  # 全部接入（具身 + 自主心智）
+├── main_chat.py             # 只有对话
 ├── requirements.txt
 ├── README.md
 └── jspaceai/
     ├── __init__.py
-    ├── core.py              # 核心：Expert + JSpaceWorkspace + JSpaceModel
+    ├── core.py              # 核心：Expert + JSpaceWorkspace + JSpaceModel（RK4+LayerNorm）
     ├── baselines.py         # 对比基线：FlatBaseline
     ├── task.py              # 玩具任务：多模态连续序列
-    └── trainer.py           # 训练器：预测学习
+    ├── trainer.py           # 训练器：预测学习
+    ├── language_data.py     # 字符级 tokenizer + Shakespeare 语料
+    ├── language_model.py    # 语言版 + EWC + 经验回放 + 专家可塑性
+    ├── jlens.py             # J-lens 探针 + WorkspaceAblator + DirectedModulation
+    ├── multimodal.py        # 多模态核心（6 模态编解码 + 12 专家）
+    ├── realtime.py          # 摄像头 + 麦克风 + SensoryMotorLoop
+    ├── desktop.py           # 屏幕 + 键盘鼠标 + FullSensoryStream
+    ├── platform.py          # 跨平台抽象 + 权限检查
+    ├── embodied.py          # 神经系统（小脑/海马体/基底神经节/中枢神经）+ EmbodiedAgent
+    ├── autonomous.py        # 自主心智（好奇心/持久化/自我模型/元学习）
+    ├── modules.py           # 可热插拔外挂模块
+    └── evolution.py         # 自主进化训练器
 ```
 
 ## 数学细节
@@ -339,7 +288,7 @@ JspaceAI/
 
 $$\dot{m}_i = -\nabla U_i(m_i) + J_i \cdot w + P_i^{in} \cdot x + \xi$$
 
-势能 $U_i(m_i) = \frac{1}{2}\|m_i\|^2 - \frac{1}{2}\sum_k \text{softplus}(a_k \cdot m_i + b_k)$
+势能 $U_i(m_i) = \frac{1}{2}\|m_i\|^2 - \frac{c}{2}\sum_k \text{softplus}(a_k \cdot m_i + b_k)$，其中 $c = 1/\sqrt{\text{num\_wells}}$ 防梯度被 softplus 主导。
 
 多井结构让专家在吸引子之间漫游 = 内部"思考"。
 
@@ -364,12 +313,11 @@ $$\mathcal{L} = \mathbb{E}\left[\|x_{t+\Delta t} - Q(w_t)\|^2\right]$$
 这是**最小验证版本**，不是生产系统：
 
 - 玩具任务（8 维序列），不是语言/图像
-- ODE 用 Euler 积分（精度低，但简单可 backprop）
 - 专家数 5，不是大规模
-- 无持续跨会话状态（每次 forward 从零初始化）
+- 对话版字符级，不是 subword
 
 **下一步扩展方向**：
-1. 用 adjoint method 替换 Euler（Neural ODE 路线）
-2. 加跨会话状态持久化（真正的"海洋"）
-3. Scale 到更大任务（MNIST 连续预测 → 语言建模）
-4. 加输出门控的真正"自发输出"（非每步都预测）
+1. 用 adjoint method 替换 RK4（Neural ODE 路线，更低显存）
+2. Scale 到更大任务（MNIST 连续预测 → 语言建模）
+3. 加输出门控的真正"自发输出"（非每步都预测）
+4. 接 Whisper/VITS 真实语音输入输出

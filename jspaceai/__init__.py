@@ -2,7 +2,7 @@
 JspaceAI —— 全局工作空间 + J-space 广播的智慧系统
 
 模块：
-    1. core.py: 连续序列版（Expert + JSpaceWorkspace + JSpaceModel）
+    1. core.py: 核心架构（Expert + JSpaceWorkspace + JSpaceModel，含 RK4/LayerNorm/异构专家）
     2. language_model.py: 语言版 + 自主进化
     3. jlens.py: J-lens 可解释性工具
     4. multimodal.py: 多模态（图像/音频/视频/文本）
@@ -77,9 +77,6 @@ from .modules import (
     ExternalModule, SmallModelModule, KnowledgeBaseModule,
     ToolModule, ModuleDock,
 )
-from .core_v2 import JSpaceConfigV2, JSpaceModelV2
-from .distill_encoder import SmallModelEncoder
-from .distill_trainer import DistillationTrainer
 from .evolution import EvolutionTrainer
 
 __all__ = [
@@ -121,9 +118,6 @@ __all__ = [
     # 外挂模块系统（可热插拔）
     "ExternalModule", "SmallModelModule", "KnowledgeBaseModule",
     "ToolModule", "ModuleDock",
-    # 改进版核心 v2
-    "JSpaceConfigV2", "JSpaceModelV2",
-    "SmallModelEncoder", "DistillationTrainer",
     # 自主进化
     "EvolutionTrainer",
 ]

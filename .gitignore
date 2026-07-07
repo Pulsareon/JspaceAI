@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 项目运行产物
+outputs/
+*.pt
+*.pth
+*.npz
+
+# 自主心智状态（用户私有）
+~/.jspaceai/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 日志
+*.log
+logs/

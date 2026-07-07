@@ -1,0 +1,9 @@
+torch>=2.0
+numpy>=1.24,<2  # torch 2.2 不兼容 numpy 2.x
+matplotlib>=3.7
+opencv-python>=4.5
+sounddevice>=0.4
+soundfile>=0.12
+mss>=9.0
+pynput>=1.7
+av>=10.0

@@ -23,26 +23,27 @@ from pathlib import Path
 
 from jspaceai import (
     LanguageConfig, JSpaceLanguageModel, EvolutionTrainer,
-    CharTokenizer, load_shakespeare,
+    CharTokenizer, load_corpus,
 )
+from train_chat import clean_corpus
 
 
 def get_config(vocab_size: int) -> LanguageConfig:
     return LanguageConfig(
         vocab_size=vocab_size,
-        embed_dim=16, input_dim=8,
-        workspace_dim=32, expert_dim=16,
-        num_experts=5, num_wells=4,
-        ode_steps=4, dt=0.1, tau_w=0.3,
-        jacobian_sparsity=8, noise_std=0.005,
+        embed_dim=48, input_dim=24,
+        workspace_dim=96, expert_dim=48,
+        num_experts=10, num_wells=6,
+        ode_steps=3, dt=0.1, tau_w=0.5,
+        jacobian_sparsity=24, noise_std=0.002,
         use_rk4=True, use_layer_norm=True,
     )
 
 
 def load_or_init_model(device: str):
     """加载已保存的模型或初始化新模型"""
-    text = load_shakespeare()
-    tokenizer = CharTokenizer.from_text(text)
+    text = clean_corpus()  # 清洗后语料（繁简统一+过滤）
+    tokenizer = CharTokenizer.from_text(text)  # 不截断，保留所有字符
     config = get_config(tokenizer.vocab_size)
     model = JSpaceLanguageModel(config).to(device)
 
@@ -69,22 +70,37 @@ def save_model(model, config, tokenizer):
 
 
 def train(model, tokenizer, text, n_steps: int, device: str):
-    """在 Shakespeare 语料上预训练"""
+    """在 Shakespeare 语料上预训练
+
+    训练时临时关闭 RK4 用 Euler 加速（快 4 倍），训练完恢复 RK4。
+    """
     print("\n" + "=" * 60)
     print(f"预训练 {n_steps} 步（Shakespeare 语料）")
     print("=" * 60)
 
     config = model.config
+
+    # 训练时临时关 RK4 加速（Euler 快 4 倍）
+    original_rk4 = config.use_rk4
+    for expert in model.experts:
+        expert.use_rk4 = False
+    print(f"训练模式: Euler（加速），训练后恢复 RK4")
+
     trainer = EvolutionTrainer(
         model, config, lr=5e-3, ewc_lambda=0.05, device=device,
     )
     chunks = [text[i:i+200] for i in range(0, len(text), 200)]
     trainer.evolve(
         chunks, tokenizer,
-        seq_len=48, batch_size=4,
-        consolidate_every=30, generate_every=50,
+        seq_len=64, batch_size=8,
+        consolidate_every=50, generate_every=50,
         max_steps=n_steps, prompt_text="To be",
     )
+
+    # 恢复 RK4
+    for expert in model.experts:
+        expert.use_rk4 = original_rk4
+
     save_model(model, config, tokenizer)
     print(f"\n模型已保存: outputs/chat_model.pt")
 
@@ -211,7 +227,7 @@ def main():
     p.add_argument('--mode', default='chat',
                    choices=['chat', 'train', 'generate'],
                    help='运行模式: chat=交互, train=预训练, generate=一次性生成')
-    p.add_argument('--steps', type=int, default=100, help='train 模式步数')
+    p.add_argument('--steps', type=int, default=600, help='train 模式步数')
     p.add_argument('--prompt', default='To be', help='generate 模式提示词')
     p.add_argument('--device', default='cpu', help='设备 (cpu/cuda/mps/auto)')
     args = p.parse_args()

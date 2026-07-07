@@ -19,7 +19,7 @@ from .baselines import FlatBaseline
 from .task import ContinuousSequenceTask
 from .trainer import Trainer
 
-from .language_data import CharTokenizer, CharDataset, load_shakespeare
+from .language_data import CharTokenizer, CharDataset, load_shakespeare, load_chinese_corpus, load_textbook_corpus, load_corpus
 from .language_model import (
     LanguageConfig,
     JSpaceLanguageModel,
@@ -88,6 +88,7 @@ __all__ = [
     "ContinuousSequenceTask", "Trainer",
     # 语言建模
     "CharTokenizer", "CharDataset", "load_shakespeare",
+    "load_chinese_corpus", "load_textbook_corpus", "load_corpus",
     "LanguageConfig", "JSpaceLanguageModel",
     "ExperienceReplay", "EWCOptimizer", "ExpertPlasticity",
     # J-lens 可解释性

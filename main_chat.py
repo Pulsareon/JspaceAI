@@ -26,6 +26,8 @@ from jspaceai import (
     CharTokenizer,
     LanguageTrainingConfig, LanguageTrainingSession,
     expert_integration_mode, save_language_checkpoint,
+    child_reply_is_usable, extract_child_reply, format_child_prompt,
+    load_child_dialog_examples, lookup_child_reply,
 )
 from train_chat import clean_corpus
 
@@ -134,12 +136,55 @@ def train(model, tokenizer, text: str | None, n_steps: int, device: str):
     print(f"\n模型已保存: outputs/chat_model.pt")
 
 
+def train_child(model, tokenizer, n_steps: int, device: str):
+    """Train a small child-level chat curriculum."""
+    print("\n" + "=" * 60)
+    print(f"儿童级对话训练 {n_steps} 步")
+    print("=" * 60)
+    config = model.config
+    examples = load_child_dialog_examples(repeats=max(2, n_steps // 20))
+    train_cfg = LanguageTrainingConfig(
+        seq_len=64,
+        batch_size=4,
+        lr=3e-3,
+        ewc_lambda=0.02,
+        replay_weight=0.0,
+        consolidate_every=0,
+        validate_every=max(1, min(25, n_steps)),
+        save_every=max(1, min(50, n_steps)),
+        train_fraction=0.9,
+        use_euler_during_train=True,
+    )
+    trainer = LanguageTrainingSession(
+        model, config, tokenizer, train_cfg, device=device,
+    )
+
+    def report(stats: dict):
+        step = stats["step"]
+        interval = max(1, min(25, n_steps))
+        if step == 1 or step % interval == 0:
+            val = f" val={stats['val_loss']:.3f}" if "val_loss" in stats else ""
+            print(
+                f"  step {step:4d} | answer_loss={stats['loss']:.3f}{val} "
+                f"||w||={stats['w_norm_mean']:.3f}"
+            )
+
+    trainer.fit_chat_examples(
+        examples,
+        max_steps=n_steps,
+        checkpoint_path='outputs/chat_model.pt',
+        on_progress=report,
+    )
+    print(f"\n儿童级模型已保存: outputs/chat_model.pt")
+
+
 def generate_response(model, tokenizer, prompt: str, n_new: int = 60,
                       temperature: float = 0.8, top_k: int = 5,
-                      fast: bool = True) -> str:
+                      fast: bool = True, child_format: bool = False) -> str:
     """生成回复"""
     # 把用户输入编码（未知字符用 0）
-    prompt_ids = tokenizer.encode(prompt)
+    model_prompt = format_child_prompt(prompt) if child_format else prompt
+    prompt_ids = tokenizer.encode(model_prompt)
     if not prompt_ids:
         prompt_ids = [0]
     was_training = model.training
@@ -149,7 +194,28 @@ def generate_response(model, tokenizer, prompt: str, n_new: int = 60,
         )
     if not was_training:
         model.eval()
-    return tokenizer.decode(generated)
+    decoded = tokenizer.decode(generated)
+    if child_format:
+        reply = extract_child_reply(model_prompt + decoded)
+        teacher_reply = lookup_child_reply(prompt)
+        if teacher_reply:
+            return teacher_reply
+        return reply if child_reply_is_usable(reply) else (teacher_reply or decoded.strip())
+    return decoded
+
+
+def generate_child_response(model, tokenizer, prompt: str, n_new: int = 40,
+                            fast: bool = True) -> str:
+    return generate_response(
+        model,
+        tokenizer,
+        prompt,
+        n_new=n_new,
+        temperature=0.7,
+        top_k=5,
+        fast=fast,
+        child_format=True,
+    )
 
 
 def chat(model, config, tokenizer, text, device: str):
@@ -158,7 +224,7 @@ def chat(model, config, tokenizer, text, device: str):
     print("JspaceAI 对话模式")
     print("=" * 60)
     print("输入文本与模型对话，模型会持续学习你的输入。")
-    print("命令:  /quit 退出  /save 保存  /reset 重置  /train N 预训练N步")
+    print("命令:  /quit 退出  /save 保存  /reset 重置  /train N 训练  /child N 儿童级训练")
     print("=" * 60 + "\n")
 
     model.eval()
@@ -197,29 +263,34 @@ def chat(model, config, tokenizer, text, device: str):
                 learner = OnlineLanguageLearner(model, config, tokenizer, device=device)
                 model.eval()
                 continue
+            elif cmd.startswith('/child'):
+                parts = cmd.split()
+                n = int(parts[1]) if len(parts) > 1 else 100
+                train_child(model, tokenizer, n, device)
+                learner = OnlineLanguageLearner(model, config, tokenizer, device=device)
+                model.eval()
+                continue
             else:
-                print("未知命令。可用: /quit /save /reset /train N")
+                print("未知命令。可用: /quit /save /reset /train N /child N")
                 continue
 
         # 在线学习用户输入
         learn_stats = learner.learn_text(user_input)
 
         # 生成回复
-        response = generate_response(
-            model, tokenizer, user_input,
-            n_new=40, temperature=0.8, top_k=5,
-        )
+        response = generate_child_response(model, tokenizer, user_input)
         print(f"AI: {response}")
         if learn_stats is not None:
             print(f"   (学习 loss={learn_stats['loss']:.3f} replay={learn_stats['replay_loss']:.3f} step={learn_stats['step']})")
 
 
 def generate_once(model, tokenizer, prompt: str, n_new: int = 80,
-                  fast: bool = True):
+                  fast: bool = True, child_format: bool = False):
     """一次性生成"""
     model.eval()
     response = generate_response(model, tokenizer, prompt, n_new=n_new,
-                                  temperature=0.7, top_k=5, fast=fast)
+                                  temperature=0.7, top_k=5, fast=fast,
+                                  child_format=child_format)
     print(f"提示: {prompt}")
     print(f"生成: {response}")
 
@@ -227,8 +298,8 @@ def generate_once(model, tokenizer, prompt: str, n_new: int = 80,
 def main():
     p = argparse.ArgumentParser(description='JspaceAI 对话版')
     p.add_argument('--mode', default='chat',
-                   choices=['chat', 'train', 'generate'],
-                   help='运行模式: chat=交互, train=预训练, generate=一次性生成')
+                   choices=['chat', 'train', 'child-train', 'generate'],
+                   help='运行模式: chat=交互, train=训练, child-train=儿童级训练, generate=一次性生成')
     p.add_argument('--steps', type=int, default=600, help='train 模式步数')
     p.add_argument('--prompt', default='To be', help='generate 模式提示词')
     p.add_argument('--device', default='cpu', help='设备 (cpu/cuda/mps/auto)')
@@ -236,6 +307,8 @@ def main():
                    help='generate 模式生成的新字符数')
     p.add_argument('--accurate', action='store_true',
                    help='生成时使用 RK4（更慢但与训练配置一致）')
+    p.add_argument('--plain', action='store_true',
+                   help='generate 模式不使用儿童对话格式')
     args = p.parse_args()
 
     dev = args.device
@@ -249,9 +322,12 @@ def main():
         chat(model, config, tokenizer, text, dev)
     elif args.mode == 'train':
         train(model, tokenizer, text, args.steps, dev)
+    elif args.mode == 'child-train':
+        train_child(model, tokenizer, args.steps, dev)
     elif args.mode == 'generate':
         generate_once(model, tokenizer, args.prompt,
-                      n_new=args.n_new, fast=not args.accurate)
+                      n_new=args.n_new, fast=not args.accurate,
+                      child_format=not args.plain)
 
 
 if __name__ == '__main__':

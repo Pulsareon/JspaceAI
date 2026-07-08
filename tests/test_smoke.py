@@ -7,6 +7,7 @@ import torch
 from jspaceai import (
     ActionEvent,
     ActionPolicy,
+    ChatBatchSampler,
     CharTokenizer,
     ConsensusSnapshot,
     InMemoryVectorMemoryStore,
@@ -21,7 +22,12 @@ from jspaceai import (
     OnlineLanguageLearner,
     WorkspaceEvent,
     WorkspaceRuntime,
+    build_child_chat_corpus,
     compose_action_params,
+    extract_child_reply,
+    format_child_prompt,
+    load_child_dialog_examples,
+    lookup_child_reply,
 )
 from main_chat import generate_response
 
@@ -210,6 +216,26 @@ class SmokeTests(unittest.TestCase):
         self.assertEqual(len(history), 2)
         self.assertIn("trainer", ckpt)
         self.assertEqual(ckpt["trainer"]["global_step"], 2)
+
+    def test_child_chat_sampler_masks_answer_tokens(self):
+        examples = load_child_dialog_examples(repeats=1)
+        tokenizer = CharTokenizer.from_text(build_child_chat_corpus(repeats=1))
+        sampler = ChatBatchSampler(
+            examples[:2],
+            tokenizer,
+            seq_len=48,
+            train_fraction=0.5,
+        )
+
+        token_seq, loss_mask = sampler.sample(2)
+        prompt_len = len(tokenizer.encode(format_child_prompt(examples[0].user)))
+
+        self.assertEqual(tuple(token_seq.shape), (2, 48))
+        self.assertEqual(tuple(loss_mask.shape), (2, 47))
+        self.assertGreater(loss_mask.sum().item(), 0)
+        self.assertTrue(all(v == 0 for v in loss_mask[0, :prompt_len - 1].tolist()))
+        self.assertEqual(extract_child_reply("问：你好\n答：你好呀。\n问：再见"), "你好呀。")
+        self.assertEqual(lookup_child_reply("你好"), "你好呀。")
 
     def test_compose_action_params_respects_discrete_mode(self):
         raw = torch.tensor([0.5, -0.25, 0.3, -0.4, 0.8]).numpy()

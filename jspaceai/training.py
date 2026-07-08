@@ -16,6 +16,7 @@ import torch
 import torch.nn.functional as F
 
 from .language_data import CharTokenizer
+from .child_data import ChildDialogExample, format_child_prompt
 from .language_model import (
     EWCOptimizer,
     ExperienceReplay,
@@ -90,6 +91,67 @@ class TokenBatchSampler:
         return torch.tensor(rows, dtype=torch.long, device=device)
 
 
+class ChatBatchSampler:
+    """Samples prompt/answer examples and masks loss to answer tokens only."""
+
+    def __init__(
+        self,
+        examples: list[ChildDialogExample],
+        tokenizer: CharTokenizer,
+        seq_len: int = 96,
+        train_fraction: float = 0.95,
+    ):
+        if not examples:
+            raise ValueError("examples must not be empty")
+        self.tokenizer = tokenizer
+        self.seq_len = seq_len
+        split = int(len(examples) * train_fraction)
+        split = min(max(1, split), len(examples))
+        self.train_examples = examples[:split]
+        self.val_examples = examples[split:] or examples[:split]
+
+    def sample(
+        self,
+        batch_size: int,
+        split: str = "train",
+        device: str = "cpu",
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        examples = self.train_examples if split == "train" else self.val_examples
+        token_rows = []
+        mask_rows = []
+        for _ in range(batch_size):
+            idx = torch.randint(0, len(examples), (1,)).item()
+            token_row, mask_row = self.encode_example(examples[idx])
+            token_rows.append(token_row)
+            mask_rows.append(mask_row)
+        return (
+            torch.tensor(token_rows, dtype=torch.long, device=device),
+            torch.tensor(mask_rows, dtype=torch.float32, device=device),
+        )
+
+    def encode_example(self, example: ChildDialogExample) -> tuple[list[int], list[float]]:
+        prompt = format_child_prompt(example.user)
+        answer = example.assistant + "\n"
+        prompt_ids = self.tokenizer.encode(prompt)
+        answer_ids = self.tokenizer.encode(answer)
+        token_ids = (prompt_ids + answer_ids)[:self.seq_len]
+        actual_len = len(token_ids)
+
+        if actual_len < 2:
+            token_ids = (token_ids + [0, 0])[:self.seq_len]
+            actual_len = len(token_ids)
+
+        padded = token_ids + [0] * max(0, self.seq_len - len(token_ids))
+        padded = padded[:self.seq_len]
+
+        answer_start = min(len(prompt_ids), self.seq_len)
+        mask = []
+        for target_pos in range(1, self.seq_len):
+            is_answer = answer_start <= target_pos < actual_len
+            mask.append(1.0 if is_answer else 0.0)
+        return padded, mask
+
+
 def save_language_checkpoint(
     path: str | Path,
     model: JSpaceLanguageModel,
@@ -144,24 +206,16 @@ class LanguageTrainingSession:
         token_seq = token_seq.to(self.device)
         self.model.train()
         logits, info = self.model(token_seq)
-        pred = logits[:, :-1]
-        target = token_seq[:, 1:]
-        loss = F.cross_entropy(
-            pred.reshape(-1, self.model_config.vocab_size),
-            target.reshape(-1),
-        )
+        loss = self.next_token_loss(logits, token_seq)
 
         replay_loss = torch.tensor(0.0, device=self.device)
-        replay_seq = self.replay_buffer.sample(self.train_config.replay_batch_size)
+        replay_seq = None
+        if self.train_config.replay_weight > 0:
+            replay_seq = self.replay_buffer.sample(self.train_config.replay_batch_size)
         if replay_seq is not None:
             replay_seq = replay_seq.to(self.device)
             replay_logits, _ = self.model(replay_seq)
-            replay_pred = replay_logits[:, :-1]
-            replay_target = replay_seq[:, 1:]
-            replay_loss = F.cross_entropy(
-                replay_pred.reshape(-1, self.model_config.vocab_size),
-                replay_target.reshape(-1),
-            )
+            replay_loss = self.next_token_loss(replay_logits, replay_seq)
 
         total_task_loss = loss + self.train_config.replay_weight * replay_loss
         total_loss = self.optimizer.step(total_task_loss)
@@ -176,6 +230,44 @@ class LanguageTrainingSession:
             "w_norm_mean": float(info["w_norm"].mean().item()),
             "expert_usage": self.plasticity.usage.tolist(),
         }
+
+    def learn_masked_batch(self, token_seq: torch.Tensor, loss_mask: torch.Tensor) -> dict:
+        token_seq = token_seq.to(self.device)
+        loss_mask = loss_mask.to(self.device)
+        self.model.train()
+        logits, info = self.model(token_seq)
+        loss = self.next_token_loss(logits, token_seq, loss_mask)
+        total_loss = self.optimizer.step(loss)
+        self.plasticity.update(info["alpha"].detach(), token_seq.detach())
+        self.replay_buffer.push(token_seq.detach().cpu())
+        return {
+            "loss": float(loss.item()),
+            "replay_loss": 0.0,
+            "total_loss": float(total_loss),
+            "w_norm_mean": float(info["w_norm"].mean().item()),
+            "expert_usage": self.plasticity.usage.tolist(),
+        }
+
+    def next_token_loss(
+        self,
+        logits: torch.Tensor,
+        token_seq: torch.Tensor,
+        loss_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        pred = logits[:, :-1]
+        target = token_seq[:, 1:]
+        if loss_mask is None:
+            return F.cross_entropy(
+                pred.reshape(-1, self.model_config.vocab_size),
+                target.reshape(-1),
+            )
+        per_token = F.cross_entropy(
+            pred.reshape(-1, self.model_config.vocab_size),
+            target.reshape(-1),
+            reduction="none",
+        )
+        mask = loss_mask.reshape(-1).to(per_token.device).float()
+        return (per_token * mask).sum() / mask.sum().clamp_min(1.0)
 
     @torch.no_grad()
     def evaluate(self, sampler: TokenBatchSampler) -> float:
@@ -194,6 +286,23 @@ class LanguageTrainingSession:
                 token_seq[:, 1:].reshape(-1),
             )
             losses.append(loss.item())
+        if was_training:
+            self.model.train()
+        return float(sum(losses) / len(losses))
+
+    @torch.no_grad()
+    def evaluate_chat(self, sampler: ChatBatchSampler) -> float:
+        was_training = self.model.training
+        self.model.eval()
+        losses = []
+        for _ in range(max(1, self.train_config.validate_batches)):
+            token_seq, loss_mask = sampler.sample(
+                self.train_config.batch_size,
+                split="val",
+                device=self.device,
+            )
+            logits, _ = self.model(token_seq)
+            losses.append(self.next_token_loss(logits, token_seq, loss_mask).item())
         if was_training:
             self.model.train()
         return float(sum(losses) / len(losses))
@@ -264,6 +373,61 @@ class LanguageTrainingSession:
 
         if checkpoint_path is not None:
             self.save_checkpoint(checkpoint_path)
+        return self.history
+
+    def fit_chat_examples(
+        self,
+        examples: list[ChildDialogExample],
+        max_steps: int,
+        checkpoint_path: str | Path | None = None,
+        on_progress: Callable[[dict], None] | None = None,
+    ) -> list[dict]:
+        sampler = ChatBatchSampler(
+            examples,
+            self.tokenizer,
+            seq_len=self.train_config.seq_len,
+            train_fraction=self.train_config.train_fraction,
+        )
+        use_rk4 = not self.train_config.use_euler_during_train
+        with expert_integration_mode(self.model, use_rk4=use_rk4):
+            for _ in range(max_steps):
+                batch, mask = sampler.sample(
+                    self.train_config.batch_size,
+                    split="train",
+                    device=self.device,
+                )
+                stats = self.learn_masked_batch(batch, mask)
+                self.global_step += 1
+                stats["step"] = self.global_step
+
+                if (
+                    self.train_config.validate_every > 0
+                    and self.global_step % self.train_config.validate_every == 0
+                ):
+                    stats["val_loss"] = self.evaluate_chat(sampler)
+
+                if (
+                    self.train_config.consolidate_every > 0
+                    and self.global_step % self.train_config.consolidate_every == 0
+                ):
+                    self.optimizer.consolidate(
+                        batch.detach(),
+                        n_samples=self.train_config.consolidate_samples,
+                    )
+
+                self.history.append(stats)
+                if on_progress:
+                    on_progress(stats)
+
+                if (
+                    checkpoint_path is not None
+                    and self.train_config.save_every > 0
+                    and self.global_step % self.train_config.save_every == 0
+                ):
+                    self.save_checkpoint(checkpoint_path, metadata={"curriculum": "child"})
+
+        if checkpoint_path is not None:
+            self.save_checkpoint(checkpoint_path, metadata={"curriculum": "child"})
         return self.history
 
     def state_dict(self) -> dict:

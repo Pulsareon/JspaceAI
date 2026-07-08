@@ -21,6 +21,16 @@ from .task import ContinuousSequenceTask
 from .trainer import Trainer
 
 from .language_data import CharTokenizer, CharDataset, load_shakespeare, load_chinese_corpus, load_textbook_corpus, load_corpus
+from .child_data import (
+    ChildDialogExample,
+    build_child_chat_corpus,
+    child_reply_is_usable,
+    extract_child_reply,
+    format_child_dialog,
+    format_child_prompt,
+    lookup_child_reply,
+    load_child_dialog_examples,
+)
 from .language_model import (
     LanguageConfig,
     JSpaceLanguageModel,
@@ -61,6 +71,7 @@ from .continual import (
     OnlineLanguageLearner,
 )
 from .training import (
+    ChatBatchSampler,
     LanguageTrainingConfig,
     LanguageTrainingSession,
     TokenBatchSampler,
@@ -124,6 +135,10 @@ __all__ = [
     # 语言建模
     "CharTokenizer", "CharDataset", "load_shakespeare",
     "load_chinese_corpus", "load_textbook_corpus", "load_corpus",
+    "ChildDialogExample", "build_child_chat_corpus",
+    "child_reply_is_usable", "extract_child_reply",
+    "format_child_dialog", "format_child_prompt",
+    "lookup_child_reply", "load_child_dialog_examples",
     "LanguageConfig", "JSpaceLanguageModel",
     "ExperienceReplay", "EWCOptimizer", "ExpertPlasticity",
     # J-lens 可解释性
@@ -165,6 +180,6 @@ __all__ = [
     "EvolutionTrainer",
     "OnlineLanguageLearner",
     "LanguageTrainingConfig", "LanguageTrainingSession",
-    "TokenBatchSampler", "expert_integration_mode",
+    "ChatBatchSampler", "TokenBatchSampler", "expert_integration_mode",
     "save_language_checkpoint",
 ]

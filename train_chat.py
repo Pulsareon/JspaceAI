@@ -17,6 +17,7 @@ import os
 from jspaceai import (
     LanguageConfig, JSpaceLanguageModel,
     CharTokenizer, load_chinese_corpus,
+    build_child_chat_corpus,
     LanguageTrainingConfig, LanguageTrainingSession,
 )
 
@@ -138,7 +139,7 @@ def clean_corpus(max_source_mb: int | None = None, use_cache: bool = True) -> st
         bilingual.append(simplified)
         bilingual.append(traditional)
 
-    result = '\n\n'.join(bilingual)
+    result = build_child_chat_corpus(repeats=8) + '\n\n' + '\n\n'.join(bilingual)
     if use_cache:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         cache_path.write_text(result, encoding="utf-8")

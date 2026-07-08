@@ -20,22 +20,22 @@ workspace 是模态无关的"意图空间"。
 from __future__ import annotations
 
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
 import numpy as np
 import time
-import json
-from pathlib import Path
-from typing import Optional
-from dataclasses import dataclass, field
-from collections import deque
 from pynput import mouse as pynput_mouse
 from pynput import keyboard as pynput_keyboard
 
-
-# ============================================================
-# 执行器层（对应手脚口）
-# ============================================================
+from .consensus import ConsensusSnapshot
+from .events import WorkspaceEvent
+from .memory import Hippocampus, InMemoryVectorMemoryStore
+from .policy import (
+    ActionPolicy,
+    BasalGanglia,
+    Cerebellum,
+    CentralNervousSystem,
+    ReflexArc,
+    compose_action_params,
+)
 
 class MouseActuator:
     """
@@ -172,248 +172,6 @@ class ScreenActuator:
         if self.enabled:
             self._cv2.destroyWindow(self.window_name)
 
-
-# ============================================================
-# 小脑：运动控制器（前向模型 + 逆模型）
-# ============================================================
-
-class Cerebellum(nn.Module):
-    """
-    小脑——运动协调与精细控制。
-
-    前向模型：预测"如果执行动作 A，鼠标会到哪里"
-    逆模型：给定"目标位置"，计算"需要什么动作"
-
-    人类小脑学习动作的精细映射，让动作平滑准确。
-    我们这里学习 workspace 意图 → 精确动作参数的映射。
-
-    逆模型：workspace → 动作参数
-    前向模型：动作参数 → 预测结果（用于误差反馈学习）
-    """
-
-    def __init__(self, workspace_dim: int, action_dim: int = 5):
-        super().__init__()
-        # 逆模型：workspace → action
-        self.inverse_model = nn.Sequential(
-            nn.Linear(workspace_dim, 64),
-            nn.ReLU(),
-            nn.Linear(64, 32),
-            nn.ReLU(),
-            nn.Linear(32, action_dim),
-            nn.Tanh(),  # 动作在 [-1, 1]
-        )
-        # 前向模型：action + 当前状态 → 预测下一状态
-        self.forward_model = nn.Sequential(
-            nn.Linear(action_dim + workspace_dim, 64),
-            nn.ReLU(),
-            nn.Linear(64, workspace_dim),
-        )
-        self.action_dim = action_dim
-
-    def compute_action(self, w: torch.Tensor) -> torch.Tensor:
-        """逆模型：从 workspace 意图计算动作"""
-        return self.inverse_model(w)
-
-    def predict_next(self, w: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
-        """前向模型：预测执行动作后的 workspace 状态"""
-        return self.forward_model(torch.cat([action, w], dim=-1))
-
-    def compute_motor_error(self, w: torch.Tensor, action: torch.Tensor,
-                            w_actual_next: torch.Tensor) -> torch.Tensor:
-        """计算运动误差——用于小脑学习"""
-        w_pred = self.predict_next(w, action)
-        return F.mse_loss(w_pred, w_actual_next)
-
-
-# ============================================================
-# 中枢神经：动作调度器
-# ============================================================
-
-@dataclass
-class ReflexArc:
-    """反射弧——不经过大脑的快速反应"""
-    trigger: str          # 触发条件描述
-    condition: callable   # 检查函数
-    action: callable      # 执行函数
-    priority: int = 0     # 优先级
-
-
-class CentralNervousSystem:
-    """
-    中枢神经系统——动作调度。
-
-    功能：
-        1. 反射弧：快速反应，不经过 workspace
-           - 如：突然大声音 → 退缩
-           - 如：屏幕突然变暗 → 警觉
-        2. 决策门控：决定是否让 workspace 的意图执行
-           - 高风险动作需要"确认"
-           - 习惯化动作直接执行
-        3. 动作序列：把复杂意图拆成动作序列
-           - 如"点击按钮"→ 移动到位置 + 点击
-
-    这是"自由意志"的工程对应——不是所有意图都执行，
-    系统有一个门控机制决定哪些意图变成行动。
-    """
-
-    def __init__(self):
-        self.reflexes: list[ReflexArc] = []
-        self.action_history: deque = deque(maxlen=100)
-        self.inhibit_score: float = 0.0  # 抑制分数，高时阻止动作
-
-    def add_reflex(self, reflex: ReflexArc):
-        self.reflexes.append(reflex)
-        self.reflexes.sort(key=lambda r: -r.priority)
-
-    def check_reflexes(self, sensory_state: dict) -> Optional[callable]:
-        """检查是否有反射触发"""
-        for reflex in self.reflexes:
-            try:
-                if reflex.condition(sensory_state):
-                    return reflex.action
-            except Exception:
-                continue
-        return None
-
-    def should_execute(self, action_strength: float, risk: float = 0.0) -> bool:
-        """决策门控：是否执行动作
-
-        Args:
-            action_strength: 动作强度（workspace 驱动）
-            risk: 风险评估（0-1）
-
-        Returns:
-            是否执行
-        """
-        # 抑制分数高时不执行
-        threshold = 0.3 + risk * 0.5 + self.inhibit_score
-        return action_strength > threshold
-
-    def record_action(self, action: np.ndarray, modality: str):
-        """记录执行的动作"""
-        self.action_history.append({
-            'time': time.time(),
-            'action': action.tolist() if hasattr(action, 'tolist') else action,
-            'modality': modality,
-        })
-
-
-# ============================================================
-# 海马体：外部情景记忆库
-# ============================================================
-
-class Hippocampus:
-    """
-    海马体——情景记忆。
-
-    存储历史 workspace 快照 + 时间戳 + 上下文。
-    当前 workspace 可以"回忆"相似的历史状态。
-
-    人类的情景记忆："我记得昨天在那个房间里说了什么"
-    对应：检索与当前 workspace 相似的历史 workspace。
-
-    实现用简单的向量数据库（numpy + cosine similarity）。
-    """
-
-    def __init__(self, capacity: int = 1000, workspace_dim: int = 64):
-        self.capacity = capacity
-        self.workspace_dim = workspace_dim
-        self.memories: deque = deque(maxlen=capacity)
-
-    def store(self, w: np.ndarray, context: dict = None):
-        """存储一个 workspace 快照"""
-        self.memories.append({
-            'w': w.copy(),
-            'context': context or {},
-            'timestamp': time.time(),
-        })
-
-    def recall(self, w_query: np.ndarray, top_k: int = 3) -> list[dict]:
-        """检索相似的历史记忆
-
-        Args:
-            w_query: 当前 workspace
-            top_k: 返回最相似的 k 个
-
-        Returns:
-            list of {w, context, timestamp, similarity}
-        """
-        if not self.memories:
-            return []
-
-        # 计算相似度
-        similarities = []
-        for mem in self.memories:
-            sim = np.dot(w_query, mem['w']) / (
-                np.linalg.norm(w_query) * np.linalg.norm(mem['w']) + 1e-8
-            )
-            similarities.append(sim)
-
-        # 取 top-k
-        top_idx = np.argsort(similarities)[-top_k:][::-1]
-        results = []
-        for idx in top_idx:
-            mem = self.memories[idx]
-            results.append({
-                'w': mem['w'],
-                'context': mem['context'],
-                'timestamp': mem['timestamp'],
-                'similarity': similarities[idx],
-            })
-        return results
-
-    def size(self) -> int:
-        return len(self.memories)
-
-
-# ============================================================
-# 基底神经节：动作价值学习
-# ============================================================
-
-class BasalGanglia:
-    """
-    基底神经节——习惯学习与动作选择。
-
-    学习"在什么状态下执行什么动作价值多少"。
-    高频执行的（workspace, action）对会"习惯化"——直接执行不经过思考。
-
-    对应人类的习惯：开车的动作熟练后不需要思考，
-    就是基底神经节接管了动作选择。
-    """
-
-    def __init__(self, workspace_dim: int = 64, n_actions: int = 5,
-                 learning_rate: float = 0.01):
-        self.workspace_dim = workspace_dim
-        self.n_actions = n_actions
-        self.lr = learning_rate
-        # Q-table 的近似：用线性函数 Q(s, a) = w_a · s
-        self.action_weights = np.zeros((n_actions, workspace_dim))
-        # 习惯化计数
-        self.habit_counts = np.zeros(n_actions)
-
-    def compute_values(self, w: np.ndarray) -> np.ndarray:
-        """计算各动作的价值 Q(s, a)"""
-        return self.action_weights @ w  # (n_actions,)
-
-    def select_action(self, w: np.ndarray, exploration: float = 0.1) -> int:
-        """选择动作（ε-greedy）"""
-        values = self.compute_values(w)
-        if np.random.random() < exploration:
-            return np.random.randint(self.n_actions)
-        return np.argmax(values)
-
-    def update(self, w: np.ndarray, action: int, reward: float):
-        """更新动作价值（TD learning 简化版）"""
-        values = self.compute_values(w)
-        td_error = reward - values[action]
-        self.action_weights[action] += self.lr * td_error * w
-        self.habit_counts[action] += 1
-
-    def is_habitual(self, action: int, threshold: int = 10) -> bool:
-        """判断动作是否已习惯化"""
-        return self.habit_counts[action] >= threshold
-
-
 # ============================================================
 # 完整的具身 Agent
 # ============================================================
@@ -422,18 +180,14 @@ class EmbodiedAgent:
     """
     完整的具身 Agent——感知-思考-行动闭环。
 
-    结构（对应人类神经系统）：
+    结构：
         感知层（眼耳皮肤）→ FullSensoryStream
             ↓ 编码
         大脑皮层（思考）→ MultimodalJSpaceModel
             ↓ workspace w
         海马体（记忆）→ Hippocampus 存储和检索
             ↓
-        基底神经节（动作选择）→ BasalGanglia 选动作
-            ↓
-        小脑（运动控制）→ Cerebellum 精细化动作
-            ↓
-        中枢神经（门控）→ CentralNervousSystem 决定是否执行
+        ActionPolicy（价值 + 电机参数 + 门控）
             ↓
         执行器（手足口）→ MouseActuator + KeyboardActuator + AudioActuator
 
@@ -441,11 +195,9 @@ class EmbodiedAgent:
         1. 感知：从五感获取输入
         2. 思考：workspace 更新
         3. 回忆：海马体检索相关记忆
-        4. 决策：基底神经节选动作
-        5. 精化：小脑计算动作参数
-        6. 门控：中枢神经决定执行
+        4. 决策：ActionPolicy 选动作并门控
         7. 行动：执行器执行
-        8. 学习：更新基底神经节、小脑、海马体
+        8. 学习：更新策略与海马体
     """
 
     def __init__(self, model, device: str = 'cpu',
@@ -474,25 +226,27 @@ class EmbodiedAgent:
         self.audio_actuator = AudioActuator(enabled=enable_audio_output)
         self.screen_actuator = ScreenActuator(enabled=enable_screen_output)
 
-        # 神经系统
-        self.cerebellum = Cerebellum(
+        # 策略层
+        self.policy = ActionPolicy(
             workspace_dim=self.config.workspace_dim,
-            action_dim=5,  # (dx, dy, click_l, click_r, scroll)
-        ).to(device)
-        self.cns = CentralNervousSystem()
-        self.hippocampus = Hippocampus(
+            action_dim=5,
+            n_actions=5,
+            base_threshold=risk_threshold,
+            device=device,
+        )
+        self.cerebellum = self.policy.motor_controller
+        self.cns = self.policy.gate
+        self.hippocampus = InMemoryVectorMemoryStore(
             workspace_dim=self.config.workspace_dim,
         ) if enable_memory else None
-        self.basal_ganglia = BasalGanglia(
-            workspace_dim=self.config.workspace_dim,
-            n_actions=5,
-        )
+        self.basal_ganglia = self.policy.value_model
 
         # 内部状态
         self.state = model.init_state(1, torch.device(device))
         self.step_count = 0
         self.running = False
         self.risk_threshold = risk_threshold
+        self.last_consensus: ConsensusSnapshot | None = None
 
         # 设置反射弧
         self._setup_reflexes()
@@ -509,7 +263,7 @@ class EmbodiedAgent:
         def loud_noise_response():
             self.cns.inhibit_score = 0.5
 
-        self.cns.add_reflex(ReflexArc(
+        self.policy.add_reflex(ReflexArc(
             trigger='loud_noise',
             condition=loud_noise_condition,
             action=loud_noise_response,
@@ -572,14 +326,24 @@ class EmbodiedAgent:
             if x.dim() == 1: x = x.unsqueeze(0)
             if x.dim() == 3: x = x[:, -1, :]
             if x.shape[0] != 1: x = x[-1:]
-            self.state, _ = self.model.step(self.state, x)
+            self.state, alpha, _ = self.model.step(self.state, x)
+            self.last_consensus = ConsensusSnapshot.from_workspace(
+                self.state['w'], alpha, modality, self.model.expert_modality
+            )
 
         return self.state['w'], modality
 
     def remember(self, w: torch.Tensor, context: dict):
-        """存储到海马体"""
+        """存储 workspace event 到记忆层"""
         if self.hippocampus:
-            self.hippocampus.store(w[0].cpu().numpy(), context)
+            event = WorkspaceEvent.from_tensor(
+                w,
+                modality=str(context.get('modality', 'unknown')),
+                step=int(context.get('step', self.step_count)),
+                consensus=context.get('consensus', self.last_consensus),
+                context=context,
+            )
+            self.hippocampus.put(event)
 
     def recall_memories(self, w: torch.Tensor, top_k: int = 3) -> list:
         """从海马体回忆"""
@@ -595,26 +359,11 @@ class EmbodiedAgent:
         3. 中枢神经门控
         4. 执行器执行
         """
-        w_np = w[0].cpu().numpy()
-
-        # 1. 基底神经节：选动作类别
-        action_idx = self.basal_ganglia.select_action(w_np, exploration=0.2)
-
-        # 2. 小脑：计算精确动作参数
-        with torch.no_grad():
-            action_params = self.cerebellum.compute_action(w)[0].cpu().numpy()
-
-        # 3. 中枢神经：门控
-        action_strength = np.abs(action_params).max()
-        risk = 0.0
-        # 鼠标点击风险较高
-        if action_params[2] > 0.5 or action_params[3] > 0.5:
-            risk = 0.5
-
-        execute = self.cns.should_execute(action_strength, risk)
+        decision = self.policy.decide(w)
+        action_params = decision.action_params
+        execute = decision.should_execute
 
         # 4. 执行
-        action_taken = None
         if execute:
             # 鼠标动作
             self.mouse_actuator.execute(action_params)
@@ -630,24 +379,13 @@ class EmbodiedAgent:
                     img_out = ((img_out + 1) / 2 * 255).clip(0, 255).astype(np.uint8)
                     self.screen_actuator.show_image(img_out)
 
-            action_taken = action_params.tolist()
-            self.cns.record_action(action_params, modality)
+            self.policy.record_action(action_params, modality)
 
-        return {
-            'action_idx': action_idx,
-            'action_params': action_params.tolist(),
-            'executed': execute,
-            'action_strength': float(action_strength),
-            'risk': float(risk),
-        }
+        return decision.to_dict(executed=execute)
 
-    def learn(self, w: torch.Tensor, action_params: np.ndarray, reward: float = 0.0):
+    def learn(self, w: torch.Tensor, action_idx: int, reward: float = 0.0):
         """学习——更新基底神经节和小脑"""
-        w_np = w[0].cpu().numpy()
-
-        # 基底神经节：更新动作价值
-        action_idx = self.basal_ganglia.select_action(w_np, exploration=0.0)
-        self.basal_ganglia.update(w_np, action_idx, reward)
+        self.policy.learn(w, action_idx, reward)
 
     def step_once(self) -> dict:
         """执行一步完整的感知-思考-行动循环"""
@@ -663,14 +401,14 @@ class EmbodiedAgent:
         w, modality = self.think(sensory_data)
 
         # 4. 回忆
-        memories = self.recall_memories(w)
+        self.recall_memories(w)
 
         # 5. 决策和行动
         action_info = self.decide_and_act(w, modality)
 
         # 6. 学习（自监督：预测误差作为 reward）
         reward = -action_info['risk']  # 简化：风险越低 reward 越高
-        self.learn(w, np.array(action_info['action_params']), reward)
+        self.learn(w, action_info['action_idx'], reward)
 
         # 7. 记忆存储
         self.remember(w, {
@@ -686,6 +424,7 @@ class EmbodiedAgent:
             'modality': modality,
             'w_norm': w.norm().item(),
             'action': action_info,
+            'consensus': self.last_consensus.to_dict() if self.last_consensus else None,
             'memories_count': self.hippocampus.size() if self.hippocampus else 0,
         }
 
@@ -714,7 +453,7 @@ class EmbodiedAgent:
                 elif info['step'] % 5 == 0:
                     print(f"  step {info['step']:3d} | mod {info['modality']:8s} | "
                           f"||w|| {info['w_norm']:.3f} | "
-                          f"action {info['action']['action_idx']} | "
+                          f"action {info['action']['action_name']} | "
                           f"executed {info['action']['executed']}")
 
                 time.sleep(interval)

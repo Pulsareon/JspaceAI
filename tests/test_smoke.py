@@ -1,17 +1,27 @@
 import unittest
+from pathlib import Path
+import tempfile
 
 import torch
 
 from jspaceai import (
+    ActionEvent,
+    ActionPolicy,
     CharTokenizer,
+    ConsensusSnapshot,
+    InMemoryVectorMemoryStore,
     JSpaceConfig,
     JSpaceLanguageModel,
     JSpaceModel,
     LanguageConfig,
     MultimodalConfig,
     MultimodalJSpaceModel,
+    OnlineLanguageLearner,
+    WorkspaceEvent,
+    WorkspaceRuntime,
 )
 from main_chat import generate_response
+from jspaceai import compose_action_params
 
 
 class SmokeTests(unittest.TestCase):
@@ -87,6 +97,7 @@ class SmokeTests(unittest.TestCase):
         )
 
         self.assertEqual(tuple(outputs["w"].shape), (1, 16))
+        self.assertIn("alpha", info)
         self.assertEqual(len(info["w_trajectory"]), 2)
 
     def test_tokenizer_unknown_maps_to_zero(self):
@@ -94,6 +105,169 @@ class SmokeTests(unittest.TestCase):
 
         self.assertEqual(tokenizer.encode("?"), [0])
         self.assertEqual(tokenizer.decode([0]), "<unk>")
+
+    def test_consensus_snapshot_extracts_primary_slot(self):
+        w = torch.ones(1, 4)
+        alpha = torch.tensor([[0.1, 0.7, 0.2]])
+
+        snapshot = ConsensusSnapshot.from_workspace(
+            w,
+            alpha,
+            modality="text",
+            labels=["vision", "language", "memory"],
+        )
+
+        self.assertEqual(snapshot.primary_slot().label, "language")
+        self.assertGreater(snapshot.confidence, 0.0)
+
+    def test_online_language_learner_tracks_session_state(self):
+        tokenizer = CharTokenizer.from_text("学而时习之学而时习之")
+        config = LanguageConfig(
+            vocab_size=tokenizer.vocab_size,
+            embed_dim=8,
+            input_dim=8,
+            workspace_dim=16,
+            expert_dim=8,
+            num_experts=3,
+            ode_steps=1,
+            noise_std=0.0,
+        )
+        model = JSpaceLanguageModel(config)
+        learner = OnlineLanguageLearner(
+            model,
+            config,
+            tokenizer,
+            seq_len=8,
+            replay_batch_size=1,
+            consolidate_every=2,
+        )
+
+        first = learner.learn_text("学而时习之")
+        second = learner.learn_text("学而时习之")
+
+        self.assertEqual(first["step"], 1)
+        self.assertEqual(second["step"], 2)
+        self.assertGreaterEqual(second["replay_loss"], 0.0)
+
+    def test_compose_action_params_respects_discrete_mode(self):
+        raw = torch.tensor([0.5, -0.25, 0.3, -0.4, 0.8]).numpy()
+
+        move = compose_action_params(1, raw)
+        left_click = compose_action_params(2, raw)
+
+        self.assertEqual(move.tolist(), [0.5, -0.25, 0.0, 0.0, 0.0])
+        self.assertEqual(left_click.tolist(), [0.0, 0.0, 1.0, 0.0, 0.0])
+
+    def test_action_policy_decides_from_workspace(self):
+        policy = ActionPolicy(workspace_dim=4, exploration=0.0)
+        policy.value_model.action_weights[4, 0] = 2.0
+        w = torch.tensor([[1.0, 0.0, 0.0, 0.0]])
+
+        decision = policy.decide(w)
+
+        self.assertEqual(decision.action_idx, 4)
+        self.assertEqual(decision.action_name, "scroll")
+
+    def test_workspace_event_and_memory_store_round_trip(self):
+        event = WorkspaceEvent.from_tensor(
+            torch.tensor([[1.0, 0.0, 0.0, 0.0]]),
+            modality="text",
+            step=7,
+            context={"source": "test"},
+        )
+        action = ActionEvent.from_action_info({
+            "action_idx": 1,
+            "action_name": "mouse_move",
+            "action_params": [0.1, 0.0, 0.0, 0.0, 0.0],
+            "executed": True,
+            "risk": 0.0,
+        }, step=7)
+        memory = InMemoryVectorMemoryStore(capacity=4, workspace_dim=4)
+
+        memory.put(event)
+        results = memory.query(torch.tensor([[0.9, 0.0, 0.0, 0.0]]), top_k=1)
+
+        self.assertEqual(event.to_dict()["step"], 7)
+        self.assertEqual(action.to_dict()["action_name"], "mouse_move")
+        self.assertEqual(results[0].event.modality, "text")
+        self.assertGreater(results[0].similarity, 0.9)
+
+    def test_workspace_runtime_runs_minimal_loop(self):
+        class DummySenses:
+            def start(self):
+                return None
+
+            def stop(self):
+                return None
+
+        class DummyAudio:
+            def stop(self):
+                return None
+
+        class DummyMemory:
+            def __init__(self):
+                self.items = []
+
+            def store(self, w, context=None):
+                self.items.append((w, context or {}))
+
+            def size(self):
+                return len(self.items)
+
+        class DummyConfig:
+            workspace_dim = 4
+
+        class DummyAgent:
+            def __init__(self):
+                self.config = DummyConfig()
+                self.state = {
+                    "w": torch.zeros(1, 4),
+                    "m": [torch.zeros(1, 2)],
+                }
+                self.senses = DummySenses()
+                self.audio_actuator = DummyAudio()
+                self.hippocampus = DummyMemory()
+                self.last_consensus = None
+                self.learned = []
+
+            def perceive(self):
+                return {}
+
+            def think(self, sensory_data):
+                del sensory_data
+                self.state["w"] = self.state["w"] + 0.25
+                return self.state["w"], "idle"
+
+            def decide_and_act(self, w, modality):
+                del w, modality
+                return {
+                    "action_idx": 1,
+                    "action_name": "mouse_move",
+                    "action_params": [0.0, 0.0, 0.0, 0.0, 0.0],
+                    "raw_action_params": [0.0, 0.0, 0.0, 0.0, 0.0],
+                    "executed": False,
+                    "action_strength": 0.0,
+                    "risk": 0.0,
+                }
+
+            def remember(self, w, context):
+                self.hippocampus.store(w[0].numpy(), context)
+
+            def learn(self, w, action_idx, reward=0.0):
+                del w
+                self.learned.append((action_idx, reward))
+
+        agent = DummyAgent()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = WorkspaceRuntime(agent, save_dir=Path(tmpdir), device="cpu")
+            info = runtime.step()
+
+        self.assertEqual(info["step"], 1)
+        self.assertEqual(info["modality"], "idle")
+        self.assertEqual(info["memory_count"], 1)
+        self.assertEqual(agent.learned[0][0], 1)
+        self.assertEqual(info["workspace_event"]["step"], 1)
+        self.assertEqual(info["action_event"]["action_name"], "mouse_move")
 
 
 if __name__ == "__main__":

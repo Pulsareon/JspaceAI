@@ -35,12 +35,39 @@ from .jlens import (
     DirectedModulation,
     CounterfactualReflection,
 )
+from .consensus import (
+    ConsensusSlot,
+    ConsensusSnapshot,
+)
+from .events import (
+    WorkspaceEvent,
+    ActionEvent,
+)
+from .memory import (
+    MemoryRecord,
+    MemoryStore,
+    InMemoryVectorMemoryStore,
+    Hippocampus,
+)
 from .multimodal import (
     MultimodalConfig,
     MultimodalJSpaceModel,
     VisualEncoder, VisualDecoder,
     AudioEncoder, AudioDecoder,
     TextEncoder, TextDecoder,
+)
+from .continual import (
+    OnlineLanguageLearner,
+)
+from .policy import (
+    ACTION_LABELS,
+    compose_action_params,
+    ReflexRule,
+    ActionGate,
+    ActionValueModel,
+    MotorController,
+    ActionDecision,
+    ActionPolicy,
 )
 from .realtime import (
     Frame,
@@ -66,12 +93,12 @@ from .platform import (
 )
 from .embodied import (
     MouseActuator, KeyboardActuator, AudioActuator, ScreenActuator,
-    Cerebellum, CentralNervousSystem, Hippocampus, BasalGanglia,
+    Cerebellum, CentralNervousSystem, BasalGanglia,
     EmbodiedAgent,
 )
-from .autonomous import (
-    CuriosityDrive, PersistentState, SelfModel, MetaLearner,
-    AutonomousMind,
+from .runtime import (
+    CuriosityDrive, RuntimeStateStore, PersistentState, SelfModel, MetaLearner,
+    WorkspaceRuntime, AutonomousMind,
 )
 from .modules import (
     ExternalModule, SmallModelModule, KnowledgeBaseModule,
@@ -94,11 +121,18 @@ __all__ = [
     # J-lens 可解释性
     "JLensConfig", "JLensProbe", "JLensSuite",
     "WorkspaceAblator", "DirectedModulation", "CounterfactualReflection",
+    "ConsensusSlot", "ConsensusSnapshot",
+    "WorkspaceEvent", "ActionEvent",
+    "MemoryRecord", "MemoryStore", "InMemoryVectorMemoryStore",
     # 多模态
     "MultimodalConfig", "MultimodalJSpaceModel",
     "VisualEncoder", "VisualDecoder",
     "AudioEncoder", "AudioDecoder",
     "TextEncoder", "TextDecoder",
+    # 动作策略
+    "ACTION_LABELS", "compose_action_params", "ReflexRule",
+    "ActionGate", "ActionValueModel", "MotorController",
+    "ActionDecision", "ActionPolicy",
     # 实时 I/O
     "Frame", "CameraStream", "MicrophoneStream", "AudioPlayer",
     "MultimodalStream", "SensoryMotorLoop",
@@ -114,11 +148,12 @@ __all__ = [
     "Cerebellum", "CentralNervousSystem", "Hippocampus", "BasalGanglia",
     "EmbodiedAgent",
     # 自主心智（最重要的能力）
-    "CuriosityDrive", "PersistentState", "SelfModel", "MetaLearner",
-    "AutonomousMind",
+    "CuriosityDrive", "RuntimeStateStore", "PersistentState",
+    "SelfModel", "MetaLearner", "WorkspaceRuntime", "AutonomousMind",
     # 外挂模块系统（可热插拔）
     "ExternalModule", "SmallModelModule", "KnowledgeBaseModule",
     "ToolModule", "ModuleDock",
     # 自主进化
     "EvolutionTrainer",
+    "OnlineLanguageLearner",
 ]

@@ -22,6 +22,7 @@ from pathlib import Path
 
 from jspaceai import (
     LanguageConfig, JSpaceLanguageModel, EvolutionTrainer,
+    OnlineLanguageLearner,
     CharTokenizer, load_chinese_corpus,
 )
 from train_chat import clean_corpus
@@ -168,43 +169,6 @@ def generate_response(model, tokenizer, prompt: str, n_new: int = 60,
     return tokenizer.decode(generated)
 
 
-def online_learn(model, config, tokenizer, text: str | None, user_input: str, device: str):
-    """在线学习用户输入 + 回放一段 Shakespeare 防遗忘"""
-    import torch.nn.functional as F
-    # 把用户输入作为新语料学习
-    user_tokens = tokenizer.encode(user_input)
-    if len(user_tokens) < 4:
-        return  # 太短不学
-
-    # 重复用户输入凑够 seq_len
-    seq_len = 48
-    if len(user_tokens) < seq_len:
-        user_tokens = user_tokens * (seq_len // len(user_tokens) + 1)
-    user_seq = user_tokens[:seq_len]
-    token_tensor = torch.tensor([user_seq], dtype=torch.long).to(device)
-
-    # forward + next-token loss
-    model.train()
-    model.zero_grad()
-    logits, _ = model(token_tensor)
-    pred = logits[:, :-1]
-    target = token_tensor[:, 1:]
-    loss = F.cross_entropy(
-        pred.reshape(-1, config.vocab_size),
-        target.reshape(-1),
-    )
-    loss.backward()
-    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-
-    # 手动 SGD step（EvolutionTrainer 内部有 EWC，这里简化用直接 step）
-    with torch.no_grad():
-        for p in model.parameters():
-            if p.grad is not None:
-                p -= 5e-3 * p.grad
-    model.eval()
-    return loss.item()
-
-
 def chat(model, config, tokenizer, text, device: str):
     """交互对话循环"""
     print("\n" + "=" * 60)
@@ -215,6 +179,7 @@ def chat(model, config, tokenizer, text, device: str):
     print("=" * 60 + "\n")
 
     model.eval()
+    learner = OnlineLanguageLearner(model, config, tokenizer, device=device)
     while True:
         try:
             user_input = input("你: ").strip()
@@ -238,6 +203,7 @@ def chat(model, config, tokenizer, text, device: str):
                 continue
             elif cmd == '/reset':
                 model = JSpaceLanguageModel(config).to(device)
+                learner = OnlineLanguageLearner(model, config, tokenizer, device=device)
                 print("(模型已重置为随机初始化)")
                 continue
             elif cmd.startswith('/train'):
@@ -245,6 +211,7 @@ def chat(model, config, tokenizer, text, device: str):
                 n = int(parts[1]) if len(parts) > 1 else 50
                 text = ensure_corpus(text)
                 train(model, tokenizer, text, n, device)
+                learner = OnlineLanguageLearner(model, config, tokenizer, device=device)
                 model.eval()
                 continue
             else:
@@ -252,7 +219,7 @@ def chat(model, config, tokenizer, text, device: str):
                 continue
 
         # 在线学习用户输入
-        loss = online_learn(model, config, tokenizer, text, user_input, device)
+        learn_stats = learner.learn_text(user_input)
 
         # 生成回复
         response = generate_response(
@@ -260,8 +227,8 @@ def chat(model, config, tokenizer, text, device: str):
             n_new=40, temperature=0.8, top_k=5,
         )
         print(f"AI: {response}")
-        if loss is not None:
-            print(f"   (学习 loss={loss:.3f})")
+        if learn_stats is not None:
+            print(f"   (学习 loss={learn_stats['loss']:.3f} replay={learn_stats['replay_loss']:.3f} step={learn_stats['step']})")
 
 
 def generate_once(model, tokenizer, prompt: str, n_new: int = 80,

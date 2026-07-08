@@ -28,7 +28,7 @@ import time
 
 from jspaceai import (
     MultimodalConfig, MultimodalJSpaceModel, EmbodiedAgent,
-    AutonomousMind, PLATFORM,
+    WorkspaceRuntime, PLATFORM,
     get_screen_size, print_permission_guide,
     check_camera_permission, check_microphone_permission,
     check_input_monitoring_permission,
@@ -85,7 +85,7 @@ def test_subsystems():
     for _ in range(5):
         info = agent.step_once()
         print(f"   step {info['step']:2d} | mod {info['modality']:8s} | "
-              f"||w|| {info['w_norm']:.3f} | action {info['action']['action_idx']} | "
+              f"||w|| {info['w_norm']:.3f} | action {info['action']['action_name']} | "
               f"executed {info['action']['executed']} | mem {info['memories_count']}")
         time.sleep(0.5)
     agent.senses.stop()
@@ -136,10 +136,10 @@ def live(n_steps: int, device: str, safe_mode: bool = False, unsafe: bool = Fals
         enable_screen_output=not safe_mode,
         risk_threshold=0.5 if safe_mode else 0.3,
     )
-    mind = AutonomousMind(agent, save_dir='outputs/mind', device=device)
+    runtime = WorkspaceRuntime(agent, save_dir='outputs/mind', device=device)
 
     print("\n" + "=" * 60)
-    print("自主心智 - 全感官具身循环")
+    print("Workspace Runtime - 全感官具身循环")
     print("=" * 60)
     print("好奇心驱动 + 状态持久化 + 自我模型 + 元学习")
     print(f"运行 {n_steps} 步（Ctrl+C 中断，状态自动保存）\n")
@@ -151,12 +151,13 @@ def live(n_steps: int, device: str, safe_mode: bool = False, unsafe: bool = Fals
         if info['step'] % 10 == 0:
             print(f"  step {info['step']:4d} | mod {info['modality']:8s} | "
                   f"||w|| {info['w_norm']:.3f} | curio {info['curiosity']:.3f} | "
-                  f"success {info['success']:.2f} | weak={info['weakness']} | "
+                  f"success {info['success']:.2f} | focus={info['consensus_focus']} | "
+                  f"weak={info['weakness']} | "
                   f"mem {info['memory_count']}")
 
-    mind.run(n_steps=n_steps, interval=0.2, save_every=30, on_step=on_step)
+    runtime.run(n_steps=n_steps, interval=0.2, save_every=30, on_step=on_step)
 
-    print("\n" + mind.introspect())
+    print("\n" + runtime.introspect())
 
     # 可视化
     if log:

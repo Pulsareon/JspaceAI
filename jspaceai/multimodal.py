@@ -333,7 +333,7 @@ class MultimodalJSpaceModel(nn.Module):
         }
 
     def step(self, state: dict, x: torch.Tensor,
-             record_trajectory: bool = False) -> tuple[dict, list]:
+             record_trajectory: bool = False) -> tuple[dict, torch.Tensor, list]:
         """
         单步前向
 
@@ -343,7 +343,7 @@ class MultimodalJSpaceModel(nn.Module):
             record_trajectory: 是否记录 w 轨迹
 
         Returns:
-            new_state, w_trajectory (list)
+            new_state, alpha, w_trajectory (list)
         """
         w = state['w']
         ms = state['m']
@@ -372,7 +372,7 @@ class MultimodalJSpaceModel(nn.Module):
                 w_trajectory.append(w.detach())
 
         new_state = {'w': w, 'm': ms}
-        return new_state, w_trajectory
+        return new_state, alpha, w_trajectory
 
     def encode_modality(self, modality: str, data: torch.Tensor) -> torch.Tensor:
         """编码任意模态到 input_dim
@@ -437,14 +437,15 @@ class MultimodalJSpaceModel(nn.Module):
 
         # 处理序列或单步
         w_traj_all = []
+        alpha_last = None
         if x.dim() == 2:  # 单步 (batch, input_dim)
-            state, w_traj = self.step(state, x, record_trajectory)
+            state, alpha_last, w_traj = self.step(state, x, record_trajectory)
             if record_trajectory:
                 w_traj_all = w_traj
             w = state['w']
         else:  # 序列 (batch, T, input_dim)
             for t in range(x.shape[1]):
-                state, w_traj = self.step(state, x[:, t], record_trajectory)
+                state, alpha_last, w_traj = self.step(state, x[:, t], record_trajectory)
                 if record_trajectory:
                     w_traj_all.append(w_traj)
             w = state['w']
@@ -460,6 +461,8 @@ class MultimodalJSpaceModel(nn.Module):
         info = {
             'w_norm': w.norm(dim=-1),
         }
+        if alpha_last is not None:
+            info['alpha'] = alpha_last
         if record_trajectory and w_traj_all:
             info['w_trajectory'] = w_traj_all
 

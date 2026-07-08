@@ -1,21 +1,9 @@
 """
-输出执行器层 + 神经系统
+Embodied runtime adapter.
 
-对应人类神经系统的各部分：
-    - 大脑皮层: workspace w + 专家池（已在 multimodal.py）
-    - 小脑: 运动控制器（前向模型+逆模型，精细动作）
-    - 中枢神经: 动作调度器（反射弧+决策门控）
-    - 海马体: 外部情景记忆库
-    - 基底神经节: 动作价值学习（习惯化）
-    - 执行器: 鼠标控制 + 键盘输出 + 音频输出 + 屏幕绘制
-
-核心思想：输出和输入对称。
-    输入：摄像头/麦克风/屏幕/键盘/鼠标 → 编码 → workspace
-    输出：workspace → 解码 → 鼠标移动/键盘按键/音频播放/屏幕绘制
-
-workspace 是模态无关的"意图空间"。
-"想点击左上角"这个意图，在 workspace 里是一个向量，
-解码到鼠标控制器就是移动+点击，解码到键盘就是 Tab+Enter。
+This module owns local sensors/effectors and delegates decision making to
+ActionPolicy. The shared state remains the workspace vector plus serializable
+events, so memory and runtime orchestration can evolve independently.
 """
 from __future__ import annotations
 

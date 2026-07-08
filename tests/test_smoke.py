@@ -14,14 +14,16 @@ from jspaceai import (
     JSpaceLanguageModel,
     JSpaceModel,
     LanguageConfig,
+    LanguageTrainingConfig,
+    LanguageTrainingSession,
     MultimodalConfig,
     MultimodalJSpaceModel,
     OnlineLanguageLearner,
     WorkspaceEvent,
     WorkspaceRuntime,
+    compose_action_params,
 )
 from main_chat import generate_response
-from jspaceai import compose_action_params
 
 
 class SmokeTests(unittest.TestCase):
@@ -74,6 +76,26 @@ class SmokeTests(unittest.TestCase):
         self.assertEqual(len(response), 3)
         self.assertFalse(model.training)
         self.assertTrue(all(expert.use_rk4 for expert in model.experts))
+
+    def test_language_generate_preserves_training_mode(self):
+        tokenizer = CharTokenizer.from_text("abcabc")
+        config = LanguageConfig(
+            vocab_size=tokenizer.vocab_size,
+            embed_dim=8,
+            input_dim=8,
+            workspace_dim=16,
+            expert_dim=8,
+            num_experts=3,
+            ode_steps=1,
+            noise_std=0.0,
+        )
+        model = JSpaceLanguageModel(config)
+        model.eval()
+        model.generate([1], n_new=1)
+        self.assertFalse(model.training)
+        model.train()
+        model.generate([1], n_new=1)
+        self.assertTrue(model.training)
 
     def test_multimodal_single_step_records_trajectory(self):
         config = MultimodalConfig(
@@ -148,6 +170,46 @@ class SmokeTests(unittest.TestCase):
         self.assertEqual(first["step"], 1)
         self.assertEqual(second["step"], 2)
         self.assertGreaterEqual(second["replay_loss"], 0.0)
+
+    def test_language_training_session_saves_checkpoint(self):
+        tokenizer = CharTokenizer.from_text("学而时习之学而时习之")
+        config = LanguageConfig(
+            vocab_size=tokenizer.vocab_size,
+            embed_dim=8,
+            input_dim=8,
+            workspace_dim=16,
+            expert_dim=8,
+            num_experts=3,
+            ode_steps=1,
+            noise_std=0.0,
+        )
+        model = JSpaceLanguageModel(config)
+        train_config = LanguageTrainingConfig(
+            seq_len=8,
+            batch_size=2,
+            lr=1e-2,
+            replay_batch_size=1,
+            validate_every=1,
+            validate_batches=1,
+            save_every=1,
+            consolidate_every=0,
+        )
+        session = LanguageTrainingSession(
+            model, config, tokenizer, train_config, device="cpu",
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ckpt_path = Path(tmpdir) / "model.pt"
+            history = session.fit_text(
+                "学而时习之学而时习之",
+                max_steps=2,
+                checkpoint_path=ckpt_path,
+            )
+            ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+
+        self.assertEqual(len(history), 2)
+        self.assertIn("trainer", ckpt)
+        self.assertEqual(ckpt["trainer"]["global_step"], 2)
 
     def test_compose_action_params_respects_discrete_mode(self):
         raw = torch.tensor([0.5, -0.25, 0.3, -0.4, 0.8]).numpy()

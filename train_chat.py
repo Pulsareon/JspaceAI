@@ -1,22 +1,23 @@
 #!/usr/bin/env python3
-"""训练对话模型——清洗语料 + 分阶段训练
+"""训练对话模型——清洗语料 + 可恢复分阶段训练
 
 策略：
-  1. 从 corpus/*.txt 加载维基百科语料，繁简转换
-  2. 清洗：去掉 ## 标题行、# 章节标记、过短段落、纯英文段落
-  3. 只保留连续中文段落（>= 20 字符），拼成语料
-  4. vocab=400，只保留高频字符
-  5. 分阶段训练：lr 2e-3 → 1e-3 → 5e-4
+  1. 递归读取 corpus/ 下的本地语料
+  2. 清理 markdown/HTML 噪声，过滤过短或过长段落
+  3. 同时投喂简体和繁体版本
+  4. 统一使用 LanguageTrainingSession 训练、验证和保存
+  5. 分阶段降低学习率
 """
 import torch
-import torch.nn.functional as F
 from pathlib import Path
 import time
 import re
+import os
 
 from jspaceai import (
     LanguageConfig, JSpaceLanguageModel,
-    CharTokenizer, load_chinese_corpus, load_textbook_corpus,
+    CharTokenizer, load_chinese_corpus,
+    LanguageTrainingConfig, LanguageTrainingSession,
 )
 
 
@@ -29,22 +30,42 @@ def get_config(vocab_size: int) -> LanguageConfig:
     )
 
 
-def clean_corpus() -> str:
+def _corpus_budget_mb(default: int | None = 64) -> int | None:
+    raw = os.environ.get("JSPACE_CORPUS_MAX_MB")
+    if raw is None:
+        return default
+    raw = raw.strip().lower()
+    if raw in {"", "0", "all", "none"}:
+        return None
+    return int(raw)
+
+
+def clean_corpus(max_source_mb: int | None = None, use_cache: bool = True) -> str:
     """构建中文训练语料——读取 corpus/ 下所有文件，繁简双版本同时投喂。
 
     策略：
-      1. 递归读取 corpus/ 目录下所有文件（.txt .md 等）
+      1. 递归读取 corpus/ 目录下的本地语料（默认有读取预算）
       2. 去掉 markdown/HTML 标记（链接、表格、标题符号等），只保留纯文本
       3. 对每段文本同时生成简体版和繁体版，都喂给模型
       4. 加上内嵌唐诗宋词论语（简体连续文本）
     """
     from opencc import OpenCC
-    from pathlib import Path
+
+    if max_source_mb is None:
+        max_source_mb = _corpus_budget_mb()
+
+    cache_key = "all" if max_source_mb is None else f"{max_source_mb}mb"
+    cache_path = Path("outputs/cache") / f"clean_corpus_{cache_key}.txt"
+    if use_cache and cache_path.exists():
+        return cache_path.read_text(encoding="utf-8")
+
     cc_s2t = OpenCC('s2t')  # 简转繁
     cc_t2s = OpenCC('t2s')  # 繁转简
 
     corpus_dir = Path(__file__).parent / 'corpus'
     raw_paragraphs = []
+    source_budget = None if max_source_mb is None else max_source_mb * 1024 * 1024
+    bytes_read = 0
 
     # 1. 内嵌唐诗宋词论语
     for para in load_chinese_corpus().split('\n\n'):
@@ -66,10 +87,20 @@ def clean_corpus() -> str:
         for filepath in sorted(corpus_dir.rglob('*')):
             if not filepath.is_file():
                 continue
+            if source_budget is not None:
+                try:
+                    file_size = filepath.stat().st_size
+                except OSError:
+                    continue
+                if bytes_read >= source_budget:
+                    break
+                if file_size > max(1024 * 1024, source_budget - bytes_read):
+                    continue
             try:
                 content = filepath.read_text(encoding='utf-8', errors='ignore')
             except Exception:
                 continue
+            bytes_read += len(content.encode('utf-8', errors='ignore'))
             # 去 markdown 标记
             content = re.sub(r'\[([^\]]*)\]\([^)]*\)', r'\1', content)  # 链接
             content = re.sub(r'^#{1,6}\s+', '', content, flags=re.M)    # 标题
@@ -107,29 +138,11 @@ def clean_corpus() -> str:
         bilingual.append(simplified)
         bilingual.append(traditional)
 
-    return '\n\n'.join(bilingual)
-
-
-def gen_sample(model, tok, prompt_text, n_new=80, temp=0.7, top_k=5):
-    model.eval()
-    with torch.no_grad():
-        prompt = tok.encode(prompt_text)
-        if not prompt:
-            prompt = [0]
-        state = model.init_state(1, torch.device('cpu'))
-        for t in prompt:
-            state, _, _, _ = model.step(state, torch.tensor([t]))
-        gen = []
-        last = prompt[-1]
-        for _ in range(n_new):
-            state, logits, _, _ = model.step(state, torch.tensor([last]))
-            probs = F.softmax(logits[0] / temp, dim=-1)
-            topk = probs.topk(top_k)
-            next_tok = topk.indices[torch.multinomial(topk.values, 1)].item()
-            gen.append(next_tok)
-            last = next_tok
-    model.train()
-    return prompt_text + tok.decode(gen)
+    result = '\n\n'.join(bilingual)
+    if use_cache:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(result, encoding="utf-8")
+    return result
 
 
 def main():
@@ -141,11 +154,7 @@ def main():
     model = JSpaceLanguageModel(cfg)
     print(f"vocab={tok.vocab_size}, params={sum(p.numel() for p in model.parameters()):,}")
 
-    for e in model.experts:
-        e.use_rk4 = False  # Euler 加速
-
     all_tokens = tok.encode(text)
-    seq_len = 64
 
     # 加载已有模型
     mp = Path('outputs/chat_model.pt')
@@ -169,45 +178,41 @@ def main():
 
     t_total = time.time()
     for lr, n_steps, label in stages:
-        opt = torch.optim.Adam(model.parameters(), lr=lr)
         print(f"\n{'='*60}")
         print(f"阶段: {label} | lr={lr} | {n_steps}步")
         print(f"{'='*60}")
+        train_cfg = LanguageTrainingConfig(
+            seq_len=64,
+            batch_size=8,
+            lr=lr,
+            ewc_lambda=0.05,
+            consolidate_every=100,
+            validate_every=100,
+            save_every=100,
+            use_euler_during_train=True,
+        )
+        trainer = LanguageTrainingSession(
+            model, cfg, tok, train_cfg, device='cpu',
+        )
 
-        for step in range(n_steps):
-            batch = []
-            for _ in range(8):
-                start = torch.randint(0, max(1, len(all_tokens) - seq_len - 1), (1,)).item()
-                batch.append(all_tokens[start:start + seq_len])
-            toks = torch.tensor(batch, dtype=torch.long)
+        def report(stats: dict):
+            if stats['step'] % 100 != 0:
+                return
+            val = f" val={stats['val_loss']:.3f}" if "val_loss" in stats else ""
+            print(f"\n  step {stats['step']:3d} | loss {stats['loss']:.3f}{val}")
+            model.eval()
+            for prompt in prompts:
+                generated = model.generate(tok.encode(prompt) or [0], n_new=40, temperature=0.7, top_k=5)
+                print(f"    [{prompt}] {repr((prompt + tok.decode(generated))[:60])}")
+            model.train()
 
-            logits, _ = model(toks)
-            loss = F.cross_entropy(
-                logits[:, :-1].reshape(-1, cfg.vocab_size),
-                toks[:, 1:].reshape(-1),
-            )
-            opt.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)  # 更严格的裁剪
-            opt.step()
+        trainer.fit_tokens(
+            all_tokens,
+            max_steps=n_steps,
+            checkpoint_path=mp,
+            on_progress=report,
+        )
 
-            if (step + 1) % 100 == 0:
-                samples = []
-                for p in prompts:
-                    s = gen_sample(model, tok, p, n_new=40, temp=0.7)
-                    samples.append(s)
-                print(f"\n  step {step+1:3d} | loss {loss.item():.3f}")
-                for p, s in zip(prompts, samples):
-                    print(f"    [{p}] {repr(s[:60])}")
-
-    for e in model.experts:
-        e.use_rk4 = True
-    Path('outputs').mkdir(exist_ok=True)
-    torch.save({
-        'model': model.state_dict(),
-        'config': cfg,
-        'tokenizer_chars': tok.chars,
-    }, 'outputs/chat_model.pt')
     print(f"\n完成，总耗时 {time.time()-t_total:.0f}s，已保存到 outputs/chat_model.pt")
 
 

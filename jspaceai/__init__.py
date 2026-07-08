@@ -3,11 +3,12 @@ JspaceAI —— 全局工作空间 + J-space 广播的智慧系统
 
 模块：
     1. core.py: 核心架构（Expert + JSpaceWorkspace + JSpaceModel，含 RK4/LayerNorm/异构专家）
-    2. language_model.py: 语言版 + 自主进化
+    2. language_model.py: 语言版 JSpace 模型
     3. jlens.py: J-lens 可解释性工具
     4. multimodal.py: 多模态（图像/音频/视频/文本）
-    5. realtime.py: 实时 I/O（摄像头/麦克风/扬声器）
-    6. evolution.py: 自主进化训练器
+    5. policy.py / runtime.py: 动作策略与 workspace 主循环
+    6. events.py / memory.py: 可序列化事件与记忆接口
+    7. training.py / continual.py: 可恢复训练与在线学习
 """
 from .core import (
     Expert,
@@ -58,6 +59,13 @@ from .multimodal import (
 )
 from .continual import (
     OnlineLanguageLearner,
+)
+from .training import (
+    LanguageTrainingConfig,
+    LanguageTrainingSession,
+    TokenBatchSampler,
+    expert_integration_mode,
+    save_language_checkpoint,
 )
 from .policy import (
     ACTION_LABELS,
@@ -156,4 +164,7 @@ __all__ = [
     # 自主进化
     "EvolutionTrainer",
     "OnlineLanguageLearner",
+    "LanguageTrainingConfig", "LanguageTrainingSession",
+    "TokenBatchSampler", "expert_integration_mode",
+    "save_language_checkpoint",
 ]

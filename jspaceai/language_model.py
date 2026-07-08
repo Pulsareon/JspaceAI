@@ -199,6 +199,7 @@ class JSpaceLanguageModel(nn.Module):
             temperature: 采样温度
             top_k: top-k 采样
         """
+        was_training = self.training
         self.eval()
         device = next(self.parameters()).device
         state = self.init_state(1, device)
@@ -226,7 +227,10 @@ class JSpaceLanguageModel(nn.Module):
             generated.append(next_tok)
             tokens.append(next_tok)
 
-        self.train()
+        if was_training:
+            self.train()
+        else:
+            self.eval()
         return generated
 
 
@@ -285,11 +289,18 @@ class EWCOptimizer:
     """
 
     def __init__(self, model: nn.Module, lr: float = 1e-3,
-                 ewc_lambda: float = 1.0, max_grad_norm: float = 1.0):
+                 ewc_lambda: float = 1.0, max_grad_norm: float = 1.0,
+                 weight_decay: float = 0.0):
         self.model = model
-        self.optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+        if weight_decay > 0:
+            self.optimizer = torch.optim.AdamW(
+                model.parameters(), lr=lr, weight_decay=weight_decay,
+            )
+        else:
+            self.optimizer = torch.optim.Adam(model.parameters(), lr=lr)
         self.ewc_lambda = ewc_lambda
         self.max_grad_norm = max_grad_norm
+        self.weight_decay = weight_decay
 
         # Fisher 信息和锚定参数
         self.fisher: dict[str, torch.Tensor] = {}
@@ -360,6 +371,25 @@ class EWCOptimizer:
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=self.max_grad_norm)
         self.optimizer.step()
         return total_loss.item()
+
+    def state_dict(self) -> dict:
+        return {
+            "optimizer": self.optimizer.state_dict(),
+            "ewc_lambda": self.ewc_lambda,
+            "max_grad_norm": self.max_grad_norm,
+            "weight_decay": self.weight_decay,
+            "fisher": self.fisher,
+            "anchored_params": self.anchored_params,
+        }
+
+    def load_state_dict(self, state: dict):
+        if "optimizer" in state:
+            self.optimizer.load_state_dict(state["optimizer"])
+        self.ewc_lambda = state.get("ewc_lambda", self.ewc_lambda)
+        self.max_grad_norm = state.get("max_grad_norm", self.max_grad_norm)
+        self.weight_decay = state.get("weight_decay", self.weight_decay)
+        self.fisher = state.get("fisher", {})
+        self.anchored_params = state.get("anchored_params", {})
 
 
 class ExpertPlasticity:

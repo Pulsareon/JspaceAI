@@ -209,7 +209,7 @@ def live(n_steps: int, device: str, safe_mode: bool = False, unsafe: bool = Fals
         # 记忆数
         ax = axes[1, 2]
         ax.plot(steps, [s['memory_count'] for s in log], 'teal')
-        ax.set_title('Hippocampus Memory Count'); ax.grid(True, alpha=0.3)
+        ax.set_title('Memory Count'); ax.grid(True, alpha=0.3)
 
         plt.tight_layout()
         Path('outputs').mkdir(exist_ok=True)

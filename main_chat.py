@@ -7,7 +7,7 @@ JspaceAI —— 对话版（只有语言，控制台交互）
 
 模式：
     --mode chat:     交互对话（默认）
-    --mode train:    先在 Shakespeare 语料上预训练若干步，再进入对话
+    --mode train:    在清洗后的中文语料上训练若干步
     --mode generate: 给定提示词一次性生成
 
 运行：
@@ -21,9 +21,11 @@ import torch
 from pathlib import Path
 
 from jspaceai import (
-    LanguageConfig, JSpaceLanguageModel, EvolutionTrainer,
+    LanguageConfig, JSpaceLanguageModel,
     OnlineLanguageLearner,
-    CharTokenizer, load_chinese_corpus,
+    CharTokenizer,
+    LanguageTrainingConfig, LanguageTrainingSession,
+    expert_integration_mode, save_language_checkpoint,
 )
 from train_chat import clean_corpus
 
@@ -80,12 +82,7 @@ def load_or_init_model(device: str):
 
 
 def save_model(model, config, tokenizer):
-    Path('outputs').mkdir(exist_ok=True)
-    torch.save({
-        'model': model.state_dict(),
-        'config': config,
-        'tokenizer_chars': tokenizer.chars,
-    }, 'outputs/chat_model.pt')
+    save_language_checkpoint('outputs/chat_model.pt', model, config, tokenizer)
 
 
 def ensure_corpus(text: str | None) -> str:
@@ -95,59 +92,45 @@ def ensure_corpus(text: str | None) -> str:
     return text
 
 
-class temporary_rk4:
-    """Temporarily switch expert integration mode for faster inference."""
-
-    def __init__(self, model, enabled: bool):
-        self.model = model
-        self.enabled = enabled
-        self.original = []
-
-    def __enter__(self):
-        self.original = [expert.use_rk4 for expert in self.model.experts]
-        for expert in self.model.experts:
-            expert.use_rk4 = self.enabled
-
-    def __exit__(self, exc_type, exc, tb):
-        for expert, enabled in zip(self.model.experts, self.original):
-            expert.use_rk4 = enabled
-        return False
-
-
 def train(model, tokenizer, text: str | None, n_steps: int, device: str):
-    """在 Shakespeare 语料上预训练
-
-    训练时临时关闭 RK4 用 Euler 加速（快 4 倍），训练完恢复 RK4。
-    """
+    """Scalable language-model training entrypoint."""
     print("\n" + "=" * 60)
-    print(f"预训练 {n_steps} 步（Shakespeare 语料）")
+    print(f"训练 {n_steps} 步")
     print("=" * 60)
 
     text = ensure_corpus(text)
     config = model.config
-
-    # 训练时临时关 RK4 加速（Euler 快 4 倍）
-    original_rk4 = config.use_rk4
-    for expert in model.experts:
-        expert.use_rk4 = False
-    print(f"训练模式: Euler（加速），训练后恢复 RK4")
-
-    trainer = EvolutionTrainer(
-        model, config, lr=5e-3, ewc_lambda=0.05, device=device,
+    train_cfg = LanguageTrainingConfig(
+        seq_len=64,
+        batch_size=8,
+        lr=5e-3,
+        ewc_lambda=0.05,
+        consolidate_every=50,
+        validate_every=max(1, min(50, n_steps)),
+        save_every=max(1, min(100, n_steps)),
+        use_euler_during_train=True,
     )
-    chunks = [text[i:i+200] for i in range(0, len(text), 200)]
-    trainer.evolve(
-        chunks, tokenizer,
-        seq_len=64, batch_size=8,
-        consolidate_every=50, generate_every=50,
-        max_steps=n_steps, prompt_text="学而时习之",
+    trainer = LanguageTrainingSession(
+        model, config, tokenizer, train_cfg, device=device,
     )
 
-    # 恢复 RK4
-    for expert in model.experts:
-        expert.use_rk4 = original_rk4
+    def report(stats: dict):
+        step = stats["step"]
+        interval = max(1, min(50, n_steps))
+        if step == 1 or step % interval == 0:
+            val = f" val={stats['val_loss']:.3f}" if "val_loss" in stats else ""
+            print(
+                f"  step {step:4d} | loss={stats['loss']:.3f} "
+                f"replay={stats['replay_loss']:.3f}{val} "
+                f"||w||={stats['w_norm_mean']:.3f}"
+            )
 
-    save_model(model, config, tokenizer)
+    trainer.fit_text(
+        text,
+        max_steps=n_steps,
+        checkpoint_path='outputs/chat_model.pt',
+        on_progress=report,
+    )
     print(f"\n模型已保存: outputs/chat_model.pt")
 
 
@@ -160,7 +143,7 @@ def generate_response(model, tokenizer, prompt: str, n_new: int = 60,
     if not prompt_ids:
         prompt_ids = [0]
     was_training = model.training
-    with temporary_rk4(model, enabled=not fast):
+    with expert_integration_mode(model, use_rk4=not fast):
         generated = model.generate(
             prompt_ids, n_new=n_new, temperature=temperature, top_k=top_k,
         )

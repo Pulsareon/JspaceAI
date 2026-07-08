@@ -436,11 +436,13 @@ class MultimodalJSpaceModel(nn.Module):
             x = self.encode_modality(modality, data)
 
         # 处理序列或单步
+        w_traj_all = []
         if x.dim() == 2:  # 单步 (batch, input_dim)
             state, w_traj = self.step(state, x, record_trajectory)
+            if record_trajectory:
+                w_traj_all = w_traj
             w = state['w']
         else:  # 序列 (batch, T, input_dim)
-            w_traj_all = []
             for t in range(x.shape[1]):
                 state, w_traj = self.step(state, x[:, t], record_trajectory)
                 if record_trajectory:

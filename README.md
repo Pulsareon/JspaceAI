@@ -123,6 +123,10 @@ python main_chat.py --mode chat
 
 # 一次性生成
 python main_chat.py --mode generate --prompt "To be"
+
+# 控制生成长度；默认使用快速 Euler 推理，--accurate 改用 RK4
+python main_chat.py --mode generate --prompt "学而时习之" --n-new 40
+python main_chat.py --mode generate --prompt "学而时习之" --accurate
 ```
 
 对话特性：
@@ -138,6 +142,12 @@ AI: ...
 你: /save
 你: /train 50
 你: /quit
+```
+
+## 测试
+
+```bash
+python -m unittest discover -s tests -v
 ```
 
 ## 外挂模块系统（可热插拔）

@@ -31,11 +31,11 @@ from train_chat import clean_corpus
 def get_config(vocab_size: int) -> LanguageConfig:
     return LanguageConfig(
         vocab_size=vocab_size,
-        embed_dim=48, input_dim=24,
-        workspace_dim=96, expert_dim=48,
-        num_experts=10, num_wells=6,
-        ode_steps=3, dt=0.1, tau_w=0.5,
-        jacobian_sparsity=24, noise_std=0.002,
+        embed_dim=64, input_dim=32,
+        workspace_dim=128, expert_dim=64,
+        num_experts=12, num_wells=8,
+        ode_steps=4, dt=0.1, tau_w=0.6,
+        jacobian_sparsity=32, noise_std=0.001,
         use_rk4=True, use_layer_norm=True,
     )
 
@@ -43,20 +43,33 @@ def get_config(vocab_size: int) -> LanguageConfig:
 def load_or_init_model(device: str):
     """加载已保存的模型或初始化新模型"""
     text = clean_corpus()  # 清洗后语料（繁简统一+过滤）
-    tokenizer = CharTokenizer.from_text(text)  # 不截断，保留所有字符
-    config = get_config(tokenizer.vocab_size)
-    model = JSpaceLanguageModel(config).to(device)
 
     mp = Path('outputs/chat_model.pt')
     if mp.exists():
         try:
             ckpt = torch.load(mp, map_location=device, weights_only=False)
+            # 用保存的 tokenizer chars 确保一致
+            saved_chars = ckpt.get('tokenizer_chars', None)
+            if saved_chars:
+                tokenizer = CharTokenizer(
+                    chars=saved_chars,
+                    char_to_idx={c: i for i, c in enumerate(saved_chars)},
+                    idx_to_char={i: c for i, c in enumerate(saved_chars)},
+                )
+            else:
+                tokenizer = CharTokenizer.from_text(text)
+            config = get_config(tokenizer.vocab_size)
+            model = JSpaceLanguageModel(config).to(device)
             model.load_state_dict(ckpt['model'])
-            print(f"已加载模型: {mp}（上次保存的对话状态）")
-        except Exception:
-            print("模型加载失败，全新初始化")
-    else:
-        print("全新初始化（首次对话）")
+            print(f"已加载模型: {mp}（vocab={tokenizer.vocab_size}）")
+            return model, config, tokenizer, text
+        except Exception as e:
+            print(f"模型加载失败: {e}，全新初始化")
+
+    tokenizer = CharTokenizer.from_text(text)
+    config = get_config(tokenizer.vocab_size)
+    model = JSpaceLanguageModel(config).to(device)
+    print("全新初始化（首次对话）")
     return model, config, tokenizer, text
 
 

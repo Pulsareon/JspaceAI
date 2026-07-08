@@ -22,9 +22,9 @@ from jspaceai import (
 
 def get_config(vocab_size: int) -> LanguageConfig:
     return LanguageConfig(
-        vocab_size=vocab_size, embed_dim=48, input_dim=24,
-        workspace_dim=96, expert_dim=48, num_experts=10, num_wells=6,
-        ode_steps=3, dt=0.1, tau_w=0.5, jacobian_sparsity=24, noise_std=0.002,
+        vocab_size=vocab_size, embed_dim=64, input_dim=32,
+        workspace_dim=128, expert_dim=64, num_experts=12, num_wells=8,
+        ode_steps=4, dt=0.1, tau_w=0.6, jacobian_sparsity=32, noise_std=0.001,
         use_rk4=True, use_layer_norm=True,
     )
 
@@ -136,7 +136,7 @@ def main():
     text = clean_corpus()
     print(f"清洗后语料: {len(text)} 字符")
 
-    tok = CharTokenizer.from_text(text)  # 不截断，保留所有真实字符
+    tok = CharTokenizer.from_text(text, max_vocab=3000)  # 覆盖98.9%文本
     cfg = get_config(tok.vocab_size)
     model = JSpaceLanguageModel(cfg)
     print(f"vocab={tok.vocab_size}, params={sum(p.numel() for p in model.parameters()):,}")
@@ -161,9 +161,10 @@ def main():
     prompts = ['学而时习之', '床前明月光', '學而時習之', '春天', '人']
 
     stages = [
-        (5e-3, 400, "快速下降"),
-        (2e-3, 400, "稳定收敛"),
-        (1e-3, 400, "精调"),
+        (3e-3, 500, "快速下降"),
+        (1e-3, 500, "稳定收敛"),
+        (5e-4, 500, "精调"),
+        (2e-4, 500, "最终精调"),
     ]
 
     t_total = time.time()
